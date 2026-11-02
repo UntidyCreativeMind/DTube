@@ -662,6 +662,218 @@ def test_retired_settings_do_not_come_back():
     assert "check_hours" not in db.get_settings()
 
 
+def test_stop_tracking_drops_waiting_videos_only(admin, monkeypatch):
+    probe_as(monkeypatch, PLAYLIST)
+    admin.post("/api/sources", json={"url": PLAYLIST_URL, "mode": "tv"})
+    source_id = admin.get("/api/sources").json()[0]["id"]
+    with db.connect() as conn:
+        conn.execute("UPDATE jobs SET status = 'done' WHERE video_id = 'a'")
+    admin.delete(f"/api/sources/{source_id}")
+    assert admin.get("/api/sources").json() == []
+    assert [(r["video_id"], r["status"]) for r in job_rows()] == [("a", "done")]
+    assert admin.post("/api/sources", json={"url": PLAYLIST_URL, "mode": "tv"}).json()["added"] == 2
+
+
+def download_playlist(admin, monkeypatch, mode):
+    probe_as(monkeypatch, PLAYLIST)
+    monkeypatch.setattr(ytdlp, "download", fake_download_factory())
+    monkeypatch.setattr(main.library.tags, "write_audio_tags", lambda *args: None)
+    admin.post("/api/sources", json={"url": PLAYLIST_URL, "mode": mode})
+    for _ in range(2):
+        worker._run(worker._next_job())
+    return admin.get("/api/sources").json()[0]["id"]
+
+
+def media_files():
+    return sorted(p for p in db.MEDIA_ROOT.rglob("*") if p.is_file())
+
+
+def clear_media():
+    for path in media_files():
+        path.unlink()
+
+
+@pytest.mark.parametrize("mode", ["tv", "audio", "movie"])
+def test_keeping_history_means_no_redownload(admin, monkeypatch, mode):
+    clear_media()
+    use_media_folders()
+    source_id = download_playlist(admin, monkeypatch, mode)
+    result = admin.delete(f"/api/sources/{source_id}").json()
+    assert result["forgotten"] == 0
+    assert admin.get("/api/history").json()["total"] == 2
+    assert admin.post("/api/sources", json={"url": PLAYLIST_URL, "mode": mode}).json()["added"] == 0
+
+
+@pytest.mark.parametrize("mode", ["tv", "audio", "movie"])
+def test_forgetting_clears_the_database_but_keeps_files(admin, monkeypatch, mode):
+    clear_media()
+    use_media_folders()
+    source_id = download_playlist(admin, monkeypatch, mode)
+    before = media_files()
+    assert before
+
+    assert admin.delete(f"/api/sources/{source_id}", params={"forget": True}).json()["forgotten"] == 2
+    assert media_files() == before
+    assert admin.get("/api/history").json()["total"] == 0
+    assert admin.get("/api/sources").json() == []
+    assert job_rows() == []
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM seasons").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM shows").fetchone()[0] == 0
+
+    assert admin.post("/api/sources", json={"url": PLAYLIST_URL, "mode": mode}).json()["added"] == 2
+
+
+def test_forgetting_restarts_numbering(admin, monkeypatch):
+    clear_media()
+    media = use_media_folders()
+    source_id = download_playlist(admin, monkeypatch, "tv")
+    admin.delete(f"/api/sources/{source_id}", params={"forget": True})
+    clear_media()
+    download_playlist(admin, monkeypatch, "tv")
+    assert (media / "tv" / "My Playlist" / "Season 01" / "My Playlist - S01E01 - A.mp4").exists()
+    assert (media / "tv" / "My Playlist" / "Season 01" / "My Playlist - S01E02 - B.mp4").exists()
+
+
+def test_forgetting_leaves_other_playlists_and_movies_alone(admin, monkeypatch):
+    clear_media()
+    use_media_folders()
+    download_playlist(admin, monkeypatch, "tv")
+    other_url = "https://www.youtube.com/playlist?list=PL2"
+    entries = [{"video_id": "c", "title": "C"}]
+    probe_as(monkeypatch, {**PLAYLIST, "playlist_id": "PL2", "title": "Other", "entries": entries})
+    admin.post("/api/sources", json={"url": other_url, "mode": "movie"})
+    worker._run(worker._next_job())
+    probe_as(monkeypatch, VIDEO)
+    admin.post("/api/sources", json={"url": "https://youtu.be/v"})
+    worker._run(worker._next_job())
+
+    movie_source = next(s for s in admin.get("/api/sources").json() if s["mode"] == "movie")
+    assert admin.delete(f"/api/sources/{movie_source['id']}", params={"forget": True}).json()["forgotten"] == 1
+    titles = {item["video_id"] for item in admin.get("/api/history").json()["items"]}
+    assert titles == {"a", "b", "v"}
+
+
+def test_forgetting_also_clears_unavailable_videos(admin, monkeypatch):
+    probe_as(monkeypatch, PLAYLIST)
+    admin.post("/api/sources", json={"url": PLAYLIST_URL, "mode": "tv"})
+    source_id = admin.get("/api/sources").json()[0]["id"]
+    with db.connect() as conn:
+        conn.execute("INSERT INTO unavailable VALUES ('a')")
+    admin.delete(f"/api/sources/{source_id}", params={"forget": True})
+    assert admin.post("/api/sources", json={"url": PLAYLIST_URL, "mode": "tv"}).json()["added"] == 2
+
+
+def test_cannot_forget_while_a_video_is_downloading(admin, monkeypatch):
+    probe_as(monkeypatch, PLAYLIST)
+    admin.post("/api/sources", json={"url": PLAYLIST_URL, "mode": "tv"})
+    source_id = admin.get("/api/sources").json()[0]["id"]
+    with db.connect() as conn:
+        conn.execute("UPDATE jobs SET status = 'downloading' WHERE video_id = 'a'")
+    assert admin.delete(f"/api/sources/{source_id}", params={"forget": True}).status_code == 409
+    assert len(admin.get("/api/sources").json()) == 1
+    assert len(job_rows()) == 2
+
+
+def test_older_history_learns_its_playlist():
+    with db.connect() as conn:
+        conn.execute("ALTER TABLE placements RENAME TO placements_new")
+        conn.execute(
+            "CREATE TABLE placements (id INTEGER PRIMARY KEY, video_id TEXT NOT NULL, mode TEXT NOT NULL, "
+            "show_id INTEGER NOT NULL DEFAULT 0, season INTEGER, episode INTEGER, path TEXT NOT NULL, "
+            "missing INTEGER NOT NULL DEFAULT 0, options TEXT NOT NULL DEFAULT '{}', created_at REAL NOT NULL)"
+        )
+        conn.execute("DROP TABLE placements_new")
+        conn.execute("INSERT INTO placements (video_id, mode, path, created_at) VALUES ('a', 'movie', 'x', 0)")
+        conn.execute("INSERT INTO placements (video_id, mode, path, created_at) VALUES ('b', 'movie', 'y', 0)")
+        conn.execute(
+            "INSERT INTO jobs (video_id, title, mode, source_id, status, created_at, updated_at) "
+            "VALUES ('a', 'A', 'movie', 9, 'done', 0, 0)"
+        )
+    db.init()
+    with db.connect() as conn:
+        rows = conn.execute("SELECT video_id, source_id FROM placements ORDER BY video_id").fetchall()
+    assert [tuple(r) for r in rows] == [("a", 9), ("b", None)]
+
+
+def test_scheduled_checks_leave_cancelled_videos_alone(admin, monkeypatch):
+    probe_as(monkeypatch, PLAYLIST)
+    admin.post("/api/sources", json={"url": PLAYLIST_URL, "mode": "tv"})
+    source_id = admin.get("/api/sources").json()[0]["id"]
+    with db.connect() as conn:
+        conn.execute("UPDATE jobs SET status = 'cancelled'")
+    assert worker.refresh_source(source_id, scheduled=True) == 0
+    assert worker.refresh_source(source_id) == 2
+
+
+def test_cancelled_video_can_be_added_again_by_hand(admin, monkeypatch):
+    probe_as(monkeypatch, VIDEO)
+    admin.post("/api/sources", json={"url": "https://youtu.be/v"})
+    with db.connect() as conn:
+        conn.execute("UPDATE jobs SET status = 'cancelled'")
+    assert admin.post("/api/sources", json={"url": "https://youtu.be/v"}).json()["added"] == 1
+
+
+def test_sign_in_with_plex_saves_the_token(admin, monkeypatch):
+    seen = {}
+
+    def fake_create(client_id):
+        seen["client"] = client_id
+        return 42, "pin-code"
+
+    results = iter([None, "new-token"])
+
+    def fake_check(client_id, pin_id, code):
+        assert (client_id, pin_id, code) == (seen["client"], 42, "pin-code")
+        return next(results)
+
+    monkeypatch.setattr(main.plex, "create_pin", fake_create)
+    monkeypatch.setattr(main.plex, "check_pin", fake_check)
+
+    started = admin.post("/api/plex/pin").json()
+    assert started["id"] == 42
+    assert started["auth_url"].startswith("https://app.plex.tv/auth#?")
+    assert "pin-code" in started["auth_url"]
+    assert "context%5Bdevice%5D%5Bproduct%5D=DTube" in started["auth_url"]
+
+    assert admin.get("/api/plex/pin/42").json() == {"signed_in": False, "expired": False}
+    assert admin.get("/api/plex/pin/42").json() == {"signed_in": True, "expired": False}
+    assert db.get_settings()["plex_token"] == "new-token"
+    assert admin.get("/api/settings").json()["plex_token_set"] is True
+    assert admin.get("/api/plex/pin/42").status_code == 404
+
+    admin.post("/api/plex/pin")
+    assert db.get_settings()["plex_client_id"] == seen["client"]
+
+
+def test_plex_sign_in_handles_expiry_and_network_errors(admin, monkeypatch):
+    monkeypatch.setattr(main.plex, "create_pin", lambda client_id: (7, "c"))
+
+    def network_error(*args):
+        raise OSError("down")
+
+    def expired(*args):
+        raise main.plex.PinExpired
+
+    admin.post("/api/plex/pin")
+    monkeypatch.setattr(main.plex, "check_pin", network_error)
+    assert admin.get("/api/plex/pin/7").json() == {"signed_in": False, "expired": False}
+    monkeypatch.setattr(main.plex, "check_pin", expired)
+    assert admin.get("/api/plex/pin/7").json() == {"signed_in": False, "expired": True}
+    assert admin.get("/api/plex/pin/7").status_code == 404
+
+
+def test_plex_sign_in_requires_login(client):
+    assert client.post("/api/plex/pin").status_code == 401
+    assert client.get("/api/plex/pin/1").status_code == 401
+
+
+def test_plex_client_id_stays_private_and_read_only(admin):
+    db.set_settings({"plex_client_id": "client-secret"})
+    assert "client-secret" not in admin.get("/api/settings").text
+    assert admin.put("/api/settings", json={"plex_client_id": "x"}).status_code == 400
+
+
 def test_each_playlist_has_its_own_check_frequency(admin, monkeypatch):
     probe_as(monkeypatch, PLAYLIST)
     body = {"url": PLAYLIST_URL, "mode": "tv", "check_frequency": "hourly"}

@@ -1,4 +1,40 @@
+from urllib.parse import urlencode
+
 import httpx
+
+PLEX_TV = "https://plex.tv/api/v2"
+PRODUCT = "DTube"
+
+
+class PinExpired(Exception):
+    pass
+
+
+def _pin_headers(client_id: str) -> dict:
+    return {"Accept": "application/json", "X-Plex-Product": PRODUCT, "X-Plex-Client-Identifier": client_id}
+
+
+def create_pin(client_id: str) -> tuple:
+    response = httpx.post(f"{PLEX_TV}/pins", params={"strong": "true"}, headers=_pin_headers(client_id), timeout=15)
+    response.raise_for_status()
+    pin = response.json()
+    return pin["id"], pin["code"]
+
+
+def sign_in_url(client_id: str, code: str) -> str:
+    query = urlencode({"clientID": client_id, "code": code, "context[device][product]": PRODUCT})
+    return f"https://app.plex.tv/auth#?{query}"
+
+
+def check_pin(client_id: str, pin_id: int, code: str):
+    """Return the account token once the person has signed in, otherwise None."""
+    response = httpx.get(
+        f"{PLEX_TV}/pins/{pin_id}", params={"code": code}, headers=_pin_headers(client_id), timeout=15
+    )
+    if response.status_code == 404:
+        raise PinExpired
+    response.raise_for_status()
+    return response.json().get("authToken")
 
 
 def _get(url: str, token: str, path: str, params=None):

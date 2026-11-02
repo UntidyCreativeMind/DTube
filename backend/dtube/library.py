@@ -77,7 +77,8 @@ def _next_number(conn, season) -> tuple:
     return season["number"], season["next_episode"]
 
 
-def allocate(video, mode: str, show_id: int, ext: str, settings: dict, options: dict) -> dict:
+def allocate(video, mode: str, show_id: int, ext: str, settings: dict, options: dict,
+             source_id: int | None = None) -> dict:
     """Return where a video belongs, reserving its numbers the first time it's seen.
 
     A re-download keeps the same numbers and folder, so nothing shifts in Plex.
@@ -111,11 +112,30 @@ def allocate(video, mode: str, show_id: int, ext: str, settings: dict, options: 
             path = folder / (naming.clean(video["title"]) + ext)
 
         conn.execute(
-            "INSERT INTO placements (video_id, mode, show_id, season, episode, path, created_at, options) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (video["video_id"], mode, show_id, season, episode, str(path), time.time(), stored),
+            "INSERT INTO placements (video_id, mode, show_id, season, episode, path, created_at, options, source_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (video["video_id"], mode, show_id, season, episode, str(path), time.time(), stored, source_id),
         )
         return dict(get_placement(conn, video["video_id"], show_id)) | {"old_path": None}
+
+
+def forget_source(conn, source) -> int:
+    """Clear what DTube remembers about a playlist, so tracking it again starts fresh.
+
+    Only database rows go. Files on disk are left for the person to remove.
+    """
+    source_id, show_id = source["id"], source["show_id"]
+    conn.execute(
+        "DELETE FROM unavailable WHERE video_id IN (SELECT video_id FROM jobs WHERE source_id = ?)",
+        (source_id,),
+    )
+    forgotten = conn.execute(
+        "DELETE FROM placements WHERE source_id = ? OR (show_id != 0 AND show_id = ?)", (source_id, show_id)
+    ).rowcount
+    conn.execute("DELETE FROM jobs WHERE source_id = ? OR (show_id != 0 AND show_id = ?)", (source_id, show_id))
+    conn.execute("DELETE FROM seasons WHERE show_id = ?", (show_id,))
+    conn.execute("DELETE FROM shows WHERE id = ?", (show_id,))
+    return forgotten
 
 
 def album_folder(show, settings: dict) -> Path:

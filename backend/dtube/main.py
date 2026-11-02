@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import threading
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -20,9 +21,10 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 FOLDER_KEYS = ("temp_dir", "tv_dir", "movie_dir", "music_dir")
 MODES = ("tv", "movie", "audio")
 EPISODE_ORDERS = ("playlist", "reverse")
-EDITABLE = set(db.DEFAULTS)
+EDITABLE = set(db.DEFAULTS) - {"plex_client_id"}
 NUMBER_KEYS = {"file_uid": 0, "file_gid": 0, "min_free_gb": 0}
 RECENT_JOBS = 100
+_plex_pins = {}
 
 
 
@@ -273,11 +275,25 @@ def check_source(source_id: int):
 
 
 @api.delete("/sources/{source_id}")
-def delete_source(source_id: int):
-    """Stops tracking a playlist. Files, numbering and history are kept."""
-    with db.connect() as conn:
+def delete_source(source_id: int, forget: bool = False):
+    """Stops tracking a playlist and drops its waiting videos. Files on disk are never touched.
+
+    History and numbering are kept unless `forget` is set, which makes tracking it again start fresh.
+    """
+    forgotten = 0
+    with db.transaction() as conn:
+        source = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
+        if source and forget:
+            running = conn.execute(
+                "SELECT 1 FROM jobs WHERE source_id = ? AND status IN ('downloading', 'processing')",
+                (source_id,),
+            ).fetchone()
+            if running:
+                raise HTTPException(409, "A video from this playlist is downloading. Cancel it first.")
+            forgotten = library.forget_source(conn, source)
+        conn.execute("DELETE FROM jobs WHERE source_id = ? AND status = 'queued'", (source_id,))
         conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
-    return {"ok": True}
+    return {"ok": True, "forgotten": forgotten}
 
 
 def queue_snapshot() -> dict:
@@ -363,6 +379,7 @@ def redownload(placement_id: int, body: RedownloadRequest | None = None):
 def _public_settings() -> dict:
     settings = db.get_settings()
     settings["plex_token_set"] = bool(settings.pop("plex_token"))
+    settings.pop("plex_client_id")
     return settings
 
 
@@ -435,6 +452,45 @@ def make_folder(body: FolderRequest):
     except OSError as exc:
         raise HTTPException(400, f"Can't create the folder: {exc.strerror}")
     return {"path": str(folder)}
+
+
+def _plex_client_id() -> str:
+    client_id = db.get_settings()["plex_client_id"]
+    if not client_id:
+        client_id = str(uuid.uuid4())
+        db.set_settings({"plex_client_id": client_id})
+    return client_id
+
+
+@api.post("/plex/pin")
+def start_plex_sign_in():
+    client_id = _plex_client_id()
+    try:
+        pin_id, code = plex.create_pin(client_id)
+    except Exception as exc:
+        raise HTTPException(502, f"Couldn't reach Plex: {type(exc).__name__}")
+    _plex_pins[pin_id] = code
+    return {"id": pin_id, "auth_url": plex.sign_in_url(client_id, code)}
+
+
+@api.get("/plex/pin/{pin_id}")
+def check_plex_sign_in(pin_id: int):
+    code = _plex_pins.get(pin_id)
+    if not code:
+        raise HTTPException(404, "Start the Plex sign-in again")
+    try:
+        token = plex.check_pin(_plex_client_id(), pin_id, code)
+    except plex.PinExpired:
+        _plex_pins.pop(pin_id, None)
+        return {"signed_in": False, "expired": True}
+    except Exception:
+        # A brief network problem shouldn't end the sign-in, so the page just asks again.
+        return {"signed_in": False, "expired": False}
+    if not token:
+        return {"signed_in": False, "expired": False}
+    db.set_settings({"plex_token": token})
+    _plex_pins.pop(pin_id, None)
+    return {"signed_in": True, "expired": False}
 
 
 @api.post("/plex/libraries")

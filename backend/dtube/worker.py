@@ -26,11 +26,19 @@ _cancel_requested = False
 _plex_pending = {}
 
 
-def enqueue(conn, video_id, title, mode, show_id=0, source_id=None, force=False, options=None) -> bool:
+def enqueue(conn, video_id, title, mode, show_id=0, source_id=None, force=False, options=None,
+            skip_cancelled=False) -> bool:
     if not force:
         if library.get_placement(conn, video_id, show_id):
             return False
         if conn.execute("SELECT 1 FROM unavailable WHERE video_id = ?", (video_id,)).fetchone():
+            return False
+    if skip_cancelled:
+        cancelled = conn.execute(
+            "SELECT 1 FROM jobs WHERE video_id = ? AND show_id = ? AND status = 'cancelled'",
+            (video_id, show_id),
+        ).fetchone()
+        if cancelled:
             return False
     active = conn.execute(
         f"SELECT 1 FROM jobs WHERE video_id = ? AND show_id = ? AND status IN {ACTIVE}",
@@ -47,15 +55,18 @@ def enqueue(conn, video_id, title, mode, show_id=0, source_id=None, force=False,
     return True
 
 
-def refresh_source(source_id: int) -> int:
-    """Queue any videos in a playlist that haven't been downloaded."""
+def refresh_source(source_id: int, scheduled: bool = False) -> int:
+    """Queue any videos in a playlist that haven't been downloaded.
+
+    A scheduled check leaves cancelled videos alone. Checking by hand brings them back.
+    """
     with db.connect() as conn:
         source = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
     info = ytdlp.probe(source["url"])
-    return queue_entries(source, info["entries"])
+    return queue_entries(source, info["entries"], skip_cancelled=scheduled)
 
 
-def queue_entries(source, entries) -> int:
+def queue_entries(source, entries, skip_cancelled=False) -> int:
     added = 0
     options = opts.parse(source["options"])
     if source["episode_order"] == "reverse":
@@ -64,7 +75,7 @@ def queue_entries(source, entries) -> int:
         for entry in entries:
             added += enqueue(
                 conn, entry["video_id"], entry["title"], source["mode"], source["show_id"], source["id"],
-                options=options,
+                options=options, skip_cancelled=skip_cancelled,
             )
         conn.execute("UPDATE sources SET last_checked = ? WHERE id = ?", (time.time(), source["id"]))
     return added
@@ -158,7 +169,9 @@ def _file_from_existing(job, settings) -> dict:
     video = _load_video(job["video_id"])
     if not existing or not video:
         return {}
-    placement = library.allocate(video, job["mode"], job["show_id"], existing.suffix, settings, options)
+    placement = library.allocate(
+        video, job["mode"], job["show_id"], existing.suffix, settings, options, job["source_id"]
+    )
     # Audio tags live in the file, so albums need their own copy rather than a hardlink.
     library.install_video(existing, placement, "copy" if audio else "link")
     if audio:
@@ -189,7 +202,7 @@ def _download(job, settings) -> dict:
         _update(job["id"], status="processing", progress=100, speed=None, eta=None)
         video = _save_video(result["info"])
         placement = library.allocate(
-            video, job["mode"], job["show_id"], result["video"].suffix, settings, options
+            video, job["mode"], job["show_id"], result["video"].suffix, settings, options, job["source_id"]
         )
         library.install_video(result["video"], placement)
         library.install_thumbnail(result["thumbnail"], placement)
@@ -278,7 +291,7 @@ def _scheduler_loop():
                 with db.connect() as conn:
                     conn.execute("UPDATE sources SET last_checked = ? WHERE id = ?", (time.time(), source_id))
                 try:
-                    refresh_source(source_id)
+                    refresh_source(source_id, scheduled=True)
                 except Exception as exc:
                     log.warning("Checking source %s failed: %s", source_id, exc)
             if settings["ytdlp_auto_update"] and time.time() - last_update > 86400:

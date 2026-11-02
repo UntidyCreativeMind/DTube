@@ -86,6 +86,8 @@ const FOLDERS = [
   ["music_dir", "Audio library"],
 ] as const;
 
+const PLEX_SIGN_IN_ATTEMPTS = 450;
+
 export default function SettingsPage() {
   const [form, setForm] = useState<Settings | null>(null);
   const [token, setToken] = useState("");
@@ -119,7 +121,7 @@ export default function SettingsPage() {
 
   const hasPlex = !!form?.plex_token_set && !!form.plex_url;
   useEffect(() => {
-    if (hasPlex) connectPlex("", "");
+    if (hasPlex) connectPlex(form!.plex_url, "");
   }, [hasPlex]);
 
   if (!form) return null;
@@ -137,6 +139,41 @@ export default function SettingsPage() {
       setStatus(restarting ? "Saved. DTube is restarting to apply the new file owner." : "Saved.");
     } catch (err) {
       setStatus((err as Error).message);
+    }
+  };
+
+  const signInWithPlex = async () => {
+    // Opened before any waiting, or the browser treats it as an unwanted pop-up.
+    const tab = window.open("about:blank", "_blank");
+    if (!tab) {
+      setPlexStatus("Allow pop-ups for this page, then try again.");
+      return;
+    }
+    tab.opener = null;
+    setPlexStatus("Waiting for you to sign in to Plex…");
+    try {
+      const { id, auth_url } = await api("/plex/pin", "POST");
+      tab.location.href = auth_url;
+      for (let attempt = 0; attempt < PLEX_SIGN_IN_ATTEMPTS; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const { signed_in, expired } = await api(`/plex/pin/${id}`);
+        if (signed_in) {
+          tab.close();
+          setForm((current) => current && { ...current, plex_token_set: true });
+          setToken("");
+          connectPlex(form.plex_url, "");
+          return;
+        }
+        if (expired) break;
+        if (tab.closed) {
+          setPlexStatus("Plex sign-in was cancelled.");
+          return;
+        }
+      }
+      setPlexStatus("Plex sign-in timed out. Try again.");
+    } catch (err) {
+      tab.close();
+      setPlexStatus((err as Error).message);
     }
   };
 
@@ -208,10 +245,11 @@ export default function SettingsPage() {
         <Field label="Server address">
           <input className="field" placeholder="http://192.168.1.10:32400" value={form.plex_url} onChange={(e) => set("plex_url", e.target.value)} />
         </Field>
-        <Field label={form.plex_token_set ? "Token (saved, enter a new one to replace it)" : "Token"}>
+        <Field label={form.plex_token_set ? "Token (saved, enter a new one to replace it)" : "Token (or use Sign in with Plex)"}>
           <input className="field" type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value)} />
         </Field>
         <div className="flex flex-wrap items-center gap-3">
+          <button className="btn btn-primary" type="button" onClick={signInWithPlex}>Sign in with Plex</button>
           <button className="btn" type="button" onClick={() => connectPlex(form.plex_url, token)}>Test connection</button>
           <span className="text-sm text-muted">{plexStatus}</span>
         </div>

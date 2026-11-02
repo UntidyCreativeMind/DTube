@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS placements (
     path TEXT NOT NULL,
     missing INTEGER NOT NULL DEFAULT 0,
     options TEXT NOT NULL DEFAULT '{}',
+    source_id INTEGER,
     created_at REAL NOT NULL,
     UNIQUE (video_id, show_id)
 );
@@ -114,6 +115,7 @@ DEFAULTS = {
     "music_dir": "",
     "plex_url": "",
     "plex_token": "",
+    "plex_client_id": "",
     "plex_tv_section": "",
     "plex_movie_section": "",
     "plex_music_section": "",
@@ -176,6 +178,14 @@ def _migrate(conn):
             if legacy:
                 pairs = ", ".join(f"'{column}', {column}" for column in legacy)
                 conn.execute(f"UPDATE {table} SET options = json_object({pairs})")
+
+    if "source_id" not in _columns(conn, "placements"):
+        conn.execute("ALTER TABLE placements ADD COLUMN source_id INTEGER")
+        conn.execute(
+            "UPDATE placements SET source_id = (SELECT j.source_id FROM jobs j "
+            "WHERE j.video_id = placements.video_id AND j.show_id = placements.show_id "
+            "AND j.status = 'done' AND j.source_id IS NOT NULL ORDER BY j.id DESC LIMIT 1)"
+        )
 
     # Early versions limited sources.mode with a CHECK, which SQLite can't alter in place.
     sql = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'sources'").fetchone()[0]

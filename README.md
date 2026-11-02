@@ -53,7 +53,7 @@ Then go to **Settings**:
 
 1. Choose your temporary, TV, movie and audio folders. These must be inside the folder you mounted. You only need the ones you'll use.
 2. Set the file owner to a user that can write to those folders and that Plex can read from.
-3. Connect Plex and pick your libraries.
+3. Enter your Plex address, click **Sign in with Plex** or paste a token, then pick your libraries.
 
 ## Plex setup
 
@@ -66,6 +66,8 @@ Create new Plex libraries instead of reusing your existing ones. Otherwise Plex 
 | Music (only for audio) | Plex's music agent, using the tags in each file |
 
 The NFO agents need Plex Media Server 1.43.1 or newer. Libraries using them don't work with Plex's watch state and ratings sync.
+
+To show channel names as season names, turn on **Use Season Titles** in the TV library's Advanced settings, then refresh the library's metadata. A season Plex already created may need its show refreshed or rematched.
 
 Audio is saved as M4A in `Playlist/01 - Title.m4a`, tagged with the playlist as the album and the channel as the artist. Single videos go in an album called `Singles`.
 

@@ -45,7 +45,7 @@
     └── My Playlist - S01E01 - Video Title.jpg
 ```
 
-`tvshow.nfo` carries `namedseason` entries so seasons can show the channel name. This needs checking on a real Plex server. The fallback is plain "Season 01" naming, which needs no change.
+`tvshow.nfo` carries `namedseason` entries so seasons show the channel name. Plex needs Use Season Titles turned on in the library's Advanced settings.
 
 ## Movie mode
 
@@ -89,7 +89,14 @@ Audio mode uses ad removal and audio language only. Files are hardlinked between
 
 ## New video checks
 
-Each playlist has its own check frequency: off, immediate, hourly or daily. YouTube has no notification for playlist changes, so immediate means checking every 5 minutes. A failed check waits for its next turn.
+Each playlist has its own check frequency: off, immediate, hourly or daily. YouTube has no notification for playlist changes, so immediate means checking every 5 minutes. A failed check waits for its next turn. Scheduled checks skip videos you cancelled, while Check now brings them back.
+
+Stopping tracking removes a playlist's waiting downloads and never touches files on disk. It offers two choices:
+
+- **Keep history:** numbering and history stay, so adding the playlist again doesn't re-download anything.
+- **Forget everything:** the playlist's history, numbering and show or album records are cleared, so adding it again downloads everything from the start. Files stay on disk for the person to delete. This is refused while one of its videos is downloading.
+
+History entries record their playlist. Movie downloads from before that was added can only be matched through a finished job in the queue, so ones already cleared from the queue stay in History.
 
 ## Ad removal
 
@@ -113,7 +120,7 @@ YouTube's own ad breaks are never in a download. Each download picks a level for
 
 ## Plex
 
-Separate libraries with the Plex NFO Series and Plex NFO Movie agents avoid false matches. `uniqueid` holds the YouTube ID, which keeps watch history stable across rescans. The UI takes the server address and token, tests the connection and lists libraries. A path mapping setting covers Plex seeing different paths than DTube.
+Separate libraries with the Plex NFO Series and Plex NFO Movie agents avoid false matches. `uniqueid` holds the YouTube ID, which keeps watch history stable across rescans. The UI takes the server address, gets a token through Plex's PIN sign-in or a pasted value, tests the connection and lists libraries. A path mapping setting covers Plex seeing different paths than DTube.
 
 ## Settings held in the UI
 

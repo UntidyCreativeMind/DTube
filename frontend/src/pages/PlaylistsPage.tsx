@@ -14,6 +14,7 @@ export default function PlaylistsPage() {
   const [message, setMessage] = useState("");
   const [checking, setChecking] = useState<number | null>(null);
   const [open, setOpen] = useState<number | null>(null);
+  const [removing, setRemoving] = useState<number | null>(null);
 
   const load = () => api<Source[]>("/sources").then(setSources).catch((e) => setMessage(e.message));
   useEffect(() => {
@@ -36,10 +37,15 @@ export default function PlaylistsPage() {
   const update = (source: Source, changes: { check_frequency?: CheckFrequency; episode_order?: EpisodeOrder; options?: Partial<DownloadOptions> }) =>
     api(`/sources/${source.id}`, "PATCH", changes).then(load).catch((e) => setMessage(e.message));
 
-  const remove = (source: Source) => {
-    if (confirm(`Stop tracking "${source.title}"? Downloaded files and history are kept.`)) {
-      api(`/sources/${source.id}`, "DELETE").then(load).catch((e) => setMessage(e.message));
+  const remove = async (source: Source, forget: boolean) => {
+    setRemoving(null);
+    try {
+      await api(`/sources/${source.id}?forget=${forget}`, "DELETE");
+      setMessage(forget ? `Forgot "${source.title}". Its files are still on disk.` : `Stopped tracking "${source.title}".`);
+    } catch (err) {
+      setMessage((err as Error).message);
     }
+    load();
   };
 
   if (!sources) return null;
@@ -70,10 +76,30 @@ export default function PlaylistsPage() {
                   <button className="btn" onClick={() => check(source)} disabled={checking === source.id}>
                     <RefreshCw size={14} className={checking === source.id ? "animate-spin" : ""} /> Check now
                   </button>
-                  <button className="p-1 text-muted hover:text-white" title="Stop tracking" aria-label="Stop tracking" onClick={() => remove(source)}>
+                  <button className="p-1 text-muted hover:text-white" title="Stop tracking" aria-label="Stop tracking"
+                    aria-expanded={removing === source.id} onClick={() => setRemoving(removing === source.id ? null : source.id)}>
                     <Trash2 size={17} />
                   </button>
                 </div>
+                {removing === source.id && (
+                  <div className="mt-3 space-y-3 border-t border-line pt-3 text-sm">
+                    <p className="text-muted">Stop tracking this playlist? Its waiting downloads are removed. Files on disk are never deleted.</p>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="space-y-2 rounded-lg border border-line p-3">
+                        <button className="btn w-full" onClick={() => remove(source, false)}>Keep history</button>
+                        <p className="text-xs text-muted">Downloads stay in History. If you add this playlist again, it won't re-download them and numbering carries on.</p>
+                      </div>
+                      <div className="space-y-2 rounded-lg border border-line p-3">
+                        <button className="btn w-full" onClick={() => remove(source, true)}>Forget everything</button>
+                        <p className="text-xs text-muted">
+                          Clears this playlist's history and numbering. If you add it again, everything downloads again from episode 1.
+                          Delete the files yourself first, or you may end up with duplicates.
+                        </p>
+                      </div>
+                    </div>
+                    <button className="btn" onClick={() => setRemoving(null)}>Cancel</button>
+                  </div>
+                )}
                 {expanded && (
                   <div className="mt-3 space-y-3 border-t border-line pt-3">
                     <p className="text-xs text-muted">Changes apply to new downloads. Use History to replace videos you already have.</p>
