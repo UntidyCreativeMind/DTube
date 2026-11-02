@@ -34,12 +34,6 @@ GitHub builds the image on every push to `main`, and it runs on 64-bit x86 machi
 - /your/media/folder:/media
 ```
 
-While the repo is private, log in to the image registry once, using a [personal access token](https://github.com/settings/tokens) with the `read:packages` scope:
-
-```sh
-docker login ghcr.io -u UntidyCreativeMind
-```
-
 Then start it:
 
 ```sh
