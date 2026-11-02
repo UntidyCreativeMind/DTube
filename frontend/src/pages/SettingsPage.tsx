@@ -90,7 +90,6 @@ const PLEX_SIGN_IN_ATTEMPTS = 450;
 
 export default function SettingsPage() {
   const [form, setForm] = useState<Settings | null>(null);
-  const [token, setToken] = useState("");
   const [libraries, setLibraries] = useState<PlexLibrary[]>([]);
   const [picking, setPicking] = useState<(typeof FOLDERS)[number][0] | null>(null);
   const [status, setStatus] = useState("");
@@ -133,9 +132,8 @@ export default function SettingsPage() {
     setStatus("Saving…");
     const { plex_token_set: _unused, ...values } = form;
     try {
-      const { restarting, ...saved } = await api("/settings", "PUT", { ...values, plex_token: token });
+      const { restarting, ...saved } = await api("/settings", "PUT", values);
       setForm(saved);
-      setToken("");
       setStatus(restarting ? "Saved. DTube is restarting to apply the new file owner." : "Saved.");
     } catch (err) {
       setStatus((err as Error).message);
@@ -160,7 +158,6 @@ export default function SettingsPage() {
         if (signed_in) {
           tab.close();
           setForm((current) => current && { ...current, plex_token_set: true });
-          setToken("");
           connectPlex(form.plex_url, "");
           return;
         }
@@ -245,12 +242,11 @@ export default function SettingsPage() {
         <Field label="Server address">
           <input className="field" placeholder="http://192.168.1.10:32400" value={form.plex_url} onChange={(e) => set("plex_url", e.target.value)} />
         </Field>
-        <Field label={form.plex_token_set ? "Token (saved, enter a new one to replace it)" : "Token (or use Sign in with Plex)"}>
-          <input className="field" type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value)} />
-        </Field>
         <div className="flex flex-wrap items-center gap-3">
-          <button className="btn btn-primary" type="button" onClick={signInWithPlex}>Sign in with Plex</button>
-          <button className="btn" type="button" onClick={() => connectPlex(form.plex_url, token)}>Test connection</button>
+          <button className={form.plex_token_set ? "btn" : "btn btn-primary"} type="button" onClick={signInWithPlex}>
+            {form.plex_token_set ? "Sign in again" : "Sign in with Plex"}
+          </button>
+          <button className="btn" type="button" disabled={!form.plex_token_set} onClick={() => connectPlex(form.plex_url, "")}>Test connection</button>
           <span className="text-sm text-muted">{plexStatus}</span>
         </div>
         <div className="grid gap-3 sm:grid-cols-2">

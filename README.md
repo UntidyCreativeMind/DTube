@@ -54,7 +54,7 @@ Then go to **Settings**:
 
 1. Choose your temporary, TV, movie and audio folders. These must be inside the folder you mounted. You only need the ones you'll use.
 2. Set the file owner to a user that can write to those folders and that Plex can read from.
-3. Enter your Plex address, click **Sign in with Plex** or paste a token, then pick your libraries.
+3. Enter your Plex address, click **Sign in with Plex**, then pick your libraries.
 
 ## Plex setup
 

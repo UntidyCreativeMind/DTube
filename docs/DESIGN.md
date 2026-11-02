@@ -125,7 +125,7 @@ The homepage shows library statistics, refreshed every 30 seconds. Total size co
 
 ## Plex
 
-Separate libraries with the Plex NFO Series and Plex NFO Movie agents avoid false matches. `uniqueid` holds the YouTube ID, which keeps watch history stable across rescans. The UI takes the server address, gets a token through Plex's PIN sign-in or a pasted value, tests the connection and lists libraries. A path mapping setting covers Plex seeing different paths than DTube.
+Separate libraries with the Plex NFO Series and Plex NFO Movie agents avoid false matches. `uniqueid` holds the YouTube ID, which keeps watch history stable across rescans. The UI takes the server address, gets a token through Plex's PIN sign-in, tests the connection and lists libraries. A path mapping setting covers Plex seeing different paths than DTube.
 
 ## Settings held in the UI
 
