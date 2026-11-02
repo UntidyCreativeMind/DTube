@@ -1,0 +1,25 @@
+# Runtime data
+/config/
+/media/
+/downloads/
+cookies.txt
+*.db
+*.db-shm
+*.db-wal
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Frontend
+node_modules/
+dist/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
