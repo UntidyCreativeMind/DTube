@@ -4,6 +4,7 @@ Self-hosted YouTube downloader for Plex, built on [yt-dlp](https://github.com/yt
 
 Paste a URL, and DTube downloads the video and files it into Plex as a TV show or a movie. All configuration happens in the web UI.
 
+- **Home** shows library statistics, and the DTube logo always returns there.
 - **Playlists** download as a TV show, movies or audio only, chosen each time.
 - **Single videos** download as a movie or audio only.
 - **Download history** stops videos downloading twice unless you ask.

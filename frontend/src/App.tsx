@@ -4,6 +4,7 @@ import { api } from "./api";
 import AuthPage from "./pages/AuthPage";
 import DownloadsPage from "./pages/DownloadsPage";
 import HistoryPage from "./pages/HistoryPage";
+import HomePage from "./pages/HomePage";
 import PlaylistsPage from "./pages/PlaylistsPage";
 import SettingsPage from "./pages/SettingsPage";
 
@@ -16,7 +17,7 @@ const TABS = [
 
 export default function App() {
   const [auth, setAuth] = useState<{ needs_setup: boolean; logged_in: boolean } | null>(null);
-  const [tab, setTab] = useState("downloads");
+  const [tab, setTab] = useState("home");
 
   const refresh = () => api("/auth/status").then(setAuth);
   useEffect(() => {
@@ -26,16 +27,17 @@ export default function App() {
   if (!auth) return null;
   if (!auth.logged_in) return <AuthPage setup={auth.needs_setup} onDone={refresh} />;
 
-  const Page = TABS.find((t) => t.id === tab)!.page;
+  const Page = TABS.find((t) => t.id === tab)?.page;
   const logout = () => api("/auth/logout", "POST").finally(refresh);
 
   return (
     <div className="min-h-screen">
       <header className="sticky top-0 z-10 border-b border-line bg-page/90 backdrop-blur">
         <div className="mx-auto flex max-w-5xl items-center gap-2 px-4 py-3">
-          <span className="mr-2 text-lg font-bold tracking-tight sm:mr-6">
+          <button onClick={() => setTab("home")} aria-label="DTube home"
+            className="mr-2 cursor-pointer text-lg font-bold tracking-tight sm:mr-6">
             D<span className="text-accent">Tube</span>
-          </span>
+          </button>
           <nav className="flex flex-1 gap-1 overflow-x-auto">
             {TABS.map(({ id, label, icon: Icon }) => (
               <button
@@ -57,7 +59,7 @@ export default function App() {
         </div>
       </header>
       <main className="mx-auto max-w-5xl px-4 py-6">
-        <Page />
+        {Page ? <Page /> : <HomePage onNavigate={setTab} />}
       </main>
     </div>
   );

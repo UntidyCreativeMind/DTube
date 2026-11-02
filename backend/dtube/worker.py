@@ -127,11 +127,12 @@ def _save_video(info: dict) -> dict:
         "channel": info.get("channel") or info.get("uploader") or "",
         "upload_date": info.get("upload_date") or "",
         "description": info.get("description") or "",
+        "duration": info.get("duration"),
     }
     with db.connect() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO videos VALUES "
-            "(:video_id, :title, :channel_id, :channel, :upload_date, :description)",
+            "INSERT OR REPLACE INTO videos (video_id, title, channel_id, channel, upload_date, description, duration) "
+            "VALUES (:video_id, :title, :channel_id, :channel, :upload_date, :description, :duration)",
             video,
         )
     return video

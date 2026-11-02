@@ -1,4 +1,6 @@
 import json
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -794,6 +796,92 @@ def test_older_history_learns_its_playlist():
     with db.connect() as conn:
         rows = conn.execute("SELECT video_id, source_id FROM placements ORDER BY video_id").fetchall()
     assert [tuple(r) for r in rows] == [("a", 9), ("b", None)]
+
+
+def add_history(video_id, mode, path, show_id=0, created_at=None, channel="Chan", duration=100, ad_removal="off"):
+    stored = options.dump({**options.DEFAULTS, "ad_removal": ad_removal})
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO videos (video_id, title, channel, duration) VALUES (?, ?, ?, ?)",
+            (video_id, video_id.upper(), channel, duration),
+        )
+        conn.execute(
+            "INSERT INTO placements (video_id, mode, show_id, path, created_at, options) VALUES (?, ?, ?, ?, ?, ?)",
+            (video_id, mode, show_id, str(path), time.time() if created_at is None else created_at, stored),
+        )
+
+
+def test_stats_need_a_login(client):
+    assert client.get("/api/stats").status_code == 401
+
+
+def test_stats_on_an_empty_library(admin):
+    body = admin.get("/api/stats").json()
+    assert body["videos"]["total"] == 0
+    assert body["storage"]["total_bytes"] == 0
+    assert body["top_channels"] == [] and body["recent"] == [] and body["activity"] == []
+
+
+def test_stats_count_the_library(admin, tmp_path):
+    episode, movie = tmp_path / "e.mp4", tmp_path / "m.mp4"
+    episode.write_bytes(b"x" * 100)
+    movie.write_bytes(b"x" * 50)
+    add_history("a", "tv", episode, show_id=1, ad_removal="aggressive")
+    add_history("b", "movie", movie, channel="Other", duration=None)
+    add_history("c", "audio", tmp_path / "gone.m4a", show_id=2, created_at=time.time() - 40 * 86400)
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO sources (url, playlist_id, title, mode, check_frequency) VALUES ('u', 'P1', 't', 'tv', 'daily'), "
+            "('u', 'P2', 't', 'movie', 'off')"
+        )
+        for status in ("queued", "queued", "downloading", "failed"):
+            conn.execute(
+                "INSERT INTO jobs (video_id, title, mode, status, created_at, updated_at) "
+                "VALUES ('z', 'Z', 'tv', ?, 0, 0)", (status,),
+            )
+
+    body = admin.get("/api/stats").json()
+    assert body["playlists"] == {"total": 2, "tv": 1, "movie": 1, "audio": 0, "auto_checked": 1}
+    videos = body["videos"]
+    assert (videos["total"], videos["tv"], videos["movie"], videos["audio"]) == (3, 1, 1, 1)
+    assert videos["ads_removed"] == 1 and videos["channels"] == 2
+    storage = body["storage"]
+    assert (storage["total_bytes"], storage["tv_bytes"], storage["movie_bytes"]) == (150, 100, 50)
+    assert storage["missing"] == 1
+    assert body["runtime"] == {"seconds": 200, "known": 2, "videos": 3}
+    assert body["queue"] == {"queued": 2, "active": 1, "failed": 1}
+    assert body["top_channels"][0] == {"channel": "Chan", "count": 2}
+    assert len(body["activity"]) == 2
+    assert len(body["recent"]) == 3
+
+
+def test_stats_count_a_hardlinked_file_once(admin, tmp_path):
+    first, second = tmp_path / "1.mp4", tmp_path / "2.mp4"
+    first.write_bytes(b"x" * 100)
+    os.link(first, second)
+    add_history("a", "tv", first, show_id=1)
+    add_history("a", "tv", second, show_id=2)
+    body = admin.get("/api/stats").json()
+    assert body["storage"]["total_bytes"] == 100
+    assert body["videos"]["total"] == 2
+    assert body["videos"]["unique"] == 1
+    assert body["runtime"]["seconds"] == 100
+
+
+def test_download_saves_the_video_length(admin, monkeypatch):
+    use_media_folders()
+    fake = fake_download_factory()
+
+    def timed(*args):
+        result = fake(*args)
+        result["info"]["duration"] = 321
+        return result
+
+    monkeypatch.setattr(ytdlp, "download", timed)
+    with db.transaction() as conn:
+        worker.enqueue(conn, "t", "T", "movie")
+    worker._run(worker._next_job())
+    assert admin.get("/api/stats").json()["runtime"]["seconds"] == 321
 
 
 def test_scheduled_checks_leave_cancelled_videos_alone(admin, monkeypatch):

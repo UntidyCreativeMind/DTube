@@ -164,4 +164,16 @@ export type Settings = {
   default_options: DownloadOptions;
 };
 
-export type PlexLibrary = { id: string; title: string; type: string; agent: string };
+export type Stats = {
+  playlists: { total: number; tv: number; movie: number; audio: number; auto_checked: number };
+  videos: { total: number; unique: number; tv: number; movie: number; audio: number; ads_removed: number; channels: number };
+  storage: { total_bytes: number; tv_bytes: number; movie_bytes: number; audio_bytes: number; missing: number };
+  disk: { free_bytes: number | null; total_bytes: number | null };
+  runtime: { seconds: number; known: number; videos: number };
+  queue: { queued: number; active: number; failed: number };
+  top_channels: { channel: string; count: number }[];
+  activity: number[];
+  recent: { title: string; mode: Mode; created_at: number }[];
+};
+
+export type PlexLibrary ={ id: string; title: string; type: string; agent: string };

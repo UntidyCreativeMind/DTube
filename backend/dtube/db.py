@@ -64,7 +64,8 @@ CREATE TABLE IF NOT EXISTS videos (
     channel_id TEXT NOT NULL DEFAULT '',
     channel TEXT NOT NULL DEFAULT '',
     upload_date TEXT NOT NULL DEFAULT '',
-    description TEXT NOT NULL DEFAULT ''
+    description TEXT NOT NULL DEFAULT '',
+    duration REAL
 );
 
 -- Private or removed videos, so scheduled checks don't keep queueing them.
@@ -161,6 +162,8 @@ def _migrate(conn):
     """Bring a database from an earlier version up to the current schema."""
     if "artist" not in _columns(conn, "shows"):
         conn.execute("ALTER TABLE shows ADD COLUMN artist TEXT NOT NULL DEFAULT ''")
+    if "duration" not in _columns(conn, "videos"):
+        conn.execute("ALTER TABLE videos ADD COLUMN duration REAL")
 
     columns = _columns(conn, "sources")
     if "check_frequency" not in columns:

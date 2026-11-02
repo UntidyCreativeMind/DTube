@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Respons
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from . import auth, db, library, plex, worker, ytdlp
+from . import auth, db, library, plex, stats, worker, ytdlp
 from . import options as opts
 from .db import MEDIA_ROOT
 
@@ -305,6 +305,11 @@ def queue_snapshot() -> dict:
             (RECENT_JOBS,),
         ).fetchall()
     return {"paused": worker.state["paused"], "jobs": [dict(r) for r in rows]}
+
+
+@api.get("/stats")
+def get_stats():
+    return stats.collect()
 
 
 @api.get("/queue")

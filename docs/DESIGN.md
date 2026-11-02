@@ -111,6 +111,10 @@ YouTube's own ad breaks are never in a download. Each download picks a level for
 - Changing a level affects new downloads. Re-downloading from History applies a level to an existing video.
 - Segments are community submitted, so very new videos may have none marked yet.
 
+## Home
+
+The homepage shows library statistics, refreshed every 30 seconds. Total size counts a hardlinked file once. Runtime uses each video's YouTube length, so it doesn't reflect ad cuts, and only covers videos downloaded since length was recorded.
+
 ## Download history
 
 - History is keyed by video ID, so a video is never downloaded twice unless asked.
