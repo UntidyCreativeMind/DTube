@@ -57,6 +57,21 @@
 A title that would collide with another video's folder gets the video ID added.
 ```
 
+## Ad removal
+
+YouTube's own ad breaks are never in a download. Each download picks a level for the segments creators build into videos, which yt-dlp cuts using SponsorBlock:
+
+| Level | SponsorBlock categories |
+|---|---|
+| Off | None |
+| Conservative | `selfpromo`, `interaction` |
+| Aggressive | `selfpromo`, `interaction`, `sponsor` |
+
+- A playlist remembers its level for later checks. Settings holds the default.
+- Changing a level affects new downloads. Re-downloading from History applies a level to an existing video.
+- Files are only hardlinked between shows when their levels match.
+- Segments are community submitted, so very new videos may have none marked yet.
+
 ## Download history
 
 - History is keyed by video ID, so a video is never downloaded twice unless asked.
@@ -87,4 +102,4 @@ Temp, TV and movie folders, Plex connection and libraries, path mapping, file ow
 
 ## Later
 
-SponsorBlock, subtitles, notifications, cleanup rules, and an optional PO token helper.
+Subtitles, notifications, cleanup rules, and an optional PO token helper.

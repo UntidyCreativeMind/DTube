@@ -13,6 +13,14 @@ export async function api<T = any>(path: string, method = "GET", body?: unknown)
   return data as T;
 }
 
+export type AdLevel = "off" | "conservative" | "aggressive";
+
+export const AD_LEVELS: { id: AdLevel; label: string; hint: string }[] = [
+  { id: "off", label: "Off", hint: "Keeps the whole video." },
+  { id: "conservative", label: "Conservative", hint: "Cuts self-promotion and subscribe reminders." },
+  { id: "aggressive", label: "Aggressive", hint: "Also cuts paid sponsor segments." },
+];
+
 export type Job = {
   id: number;
   video_id: string;
@@ -42,6 +50,7 @@ export type Source = {
   url: string;
   mode: "tv" | "movie";
   subscribed: number;
+  ad_removal: AdLevel;
   last_checked: number | null;
   done: number;
 };
@@ -55,6 +64,7 @@ export type HistoryItem = {
   path: string;
   missing: number;
   created_at: number;
+  ad_removal: AdLevel;
   title: string;
   channel: string | null;
   show: string | null;
@@ -76,6 +86,7 @@ export type Settings = {
   min_free_gb: number;
   check_hours: number;
   ytdlp_auto_update: boolean;
+  default_ad_removal: AdLevel;
 };
 
 export type PlexLibrary = { id: string; title: string; type: string; agent: string };

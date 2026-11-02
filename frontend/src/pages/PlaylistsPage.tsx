@@ -1,6 +1,6 @@
 import { Clapperboard, RefreshCw, Trash2, Tv } from "lucide-react";
 import { useEffect, useState } from "react";
-import { api, Source } from "../api";
+import { AD_LEVELS, AdLevel, api, Source } from "../api";
 
 export default function PlaylistsPage() {
   const [sources, setSources] = useState<Source[] | null>(null);
@@ -28,6 +28,9 @@ export default function PlaylistsPage() {
   const toggle = (source: Source) =>
     api(`/sources/${source.id}`, "PATCH", { subscribed: !source.subscribed }).then(load).catch((e) => setMessage(e.message));
 
+  const setAdRemoval = (source: Source, ad_removal: AdLevel) =>
+    api(`/sources/${source.id}`, "PATCH", { ad_removal }).then(load).catch((e) => setMessage(e.message));
+
   const remove = (source: Source) => {
     if (confirm(`Stop tracking "${source.title}"? Downloaded files and history are kept.`)) {
       api(`/sources/${source.id}`, "DELETE").then(load).catch((e) => setMessage(e.message));
@@ -52,6 +55,13 @@ export default function PlaylistsPage() {
                   {source.last_checked ? ` · Checked ${new Date(source.last_checked * 1000).toLocaleString()}` : ""}
                 </p>
               </div>
+              <label className="flex items-center gap-2 text-xs text-muted">
+                Ad removal
+                <select className="field !w-auto !py-1 text-xs" value={source.ad_removal} title="Applies to new downloads"
+                  onChange={(e) => setAdRemoval(source, e.target.value as AdLevel)}>
+                  {AD_LEVELS.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
+                </select>
+              </label>
               <label className="flex items-center gap-2 text-xs text-muted">
                 <input type="checkbox" checked={!!source.subscribed} onChange={() => toggle(source)} />
                 Auto-check

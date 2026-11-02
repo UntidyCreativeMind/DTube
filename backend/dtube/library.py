@@ -59,7 +59,8 @@ def _like_prefix(folder: Path) -> str:
     return prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
 
 
-def allocate(video, mode: str, show_id: int, ext: str, tv_dir: str, movie_dir: str) -> dict:
+def allocate(video, mode: str, show_id: int, ext: str, tv_dir: str, movie_dir: str,
+             ad_removal: str = "off") -> dict:
     """Return where a video belongs, reserving its numbers the first time it's seen.
 
     A re-download keeps the same numbers and folder, so nothing shifts in Plex.
@@ -69,8 +70,11 @@ def allocate(video, mode: str, show_id: int, ext: str, tv_dir: str, movie_dir: s
         if existing:
             base = Path(existing["path"]).with_suffix("")
             path = str(base.with_name(base.name + ext))
-            conn.execute("UPDATE placements SET path = ?, missing = 0 WHERE id = ?", (path, existing["id"]))
-            return {**dict(existing), "path": path, "old_path": existing["path"]}
+            conn.execute(
+                "UPDATE placements SET path = ?, missing = 0, ad_removal = ? WHERE id = ?",
+                (path, ad_removal, existing["id"]),
+            )
+            return {**dict(existing), "path": path, "old_path": existing["path"], "ad_removal": ad_removal}
 
         season = episode = None
         if mode == "tv":
@@ -85,18 +89,19 @@ def allocate(video, mode: str, show_id: int, ext: str, tv_dir: str, movie_dir: s
             path = folder / (naming.clean(video["title"]) + ext)
 
         conn.execute(
-            "INSERT INTO placements (video_id, mode, show_id, season, episode, path, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (video["video_id"], mode, show_id, season, episode, str(path), time.time()),
+            "INSERT INTO placements (video_id, mode, show_id, season, episode, path, created_at, ad_removal) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (video["video_id"], mode, show_id, season, episode, str(path), time.time(), ad_removal),
         )
         return dict(get_placement(conn, video["video_id"], show_id)) | {"old_path": None}
 
 
-def find_existing_file(video_id: str, skip_show_id: int):
-    """A copy of this video already on disk in another show or the movie library."""
+def find_existing_file(video_id: str, skip_show_id: int, ad_removal: str):
+    """A copy of this video with the same cuts, already in another show or the movie library."""
     with connect() as conn:
         rows = conn.execute(
-            "SELECT path FROM placements WHERE video_id = ? AND show_id != ?", (video_id, skip_show_id)
+            "SELECT path FROM placements WHERE video_id = ? AND show_id != ? AND ad_removal = ?",
+            (video_id, skip_show_id, ad_removal),
         ).fetchall()
     for row in rows:
         if os.path.isfile(row["path"]):

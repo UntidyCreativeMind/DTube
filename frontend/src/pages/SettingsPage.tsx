@@ -1,6 +1,6 @@
 import { ChevronUp, Folder, FolderPlus, X } from "lucide-react";
 import { ChangeEvent, ReactNode, useEffect, useState } from "react";
-import { api, PlexLibrary, Settings } from "../api";
+import { AD_LEVELS, AdLevel, api, PlexLibrary, Settings } from "../api";
 
 function Section({ title, hint, children }: { title: string; hint?: string; children: ReactNode }) {
   return (
@@ -249,6 +249,15 @@ export default function SettingsPage() {
           </Field>
         </div>
         <p className="text-xs text-muted">Above 1080p, YouTube usually sends VP9 or AV1, which can make Plex transcode.</p>
+        <Field label="Default ad removal">
+          <select className="field" value={form.default_ad_removal} onChange={(e) => set("default_ad_removal", e.target.value as AdLevel)}>
+            {AD_LEVELS.map(({ id, label, hint }) => <option key={id} value={id}>{label}: {hint}</option>)}
+          </select>
+        </Field>
+        <p className="text-xs text-muted">
+          YouTube's own ad breaks are never in downloads. These levels cut segments creators build into the video, using
+          the community-run SponsorBlock database, so very new videos may not have any segments marked yet.
+        </p>
       </Section>
 
       <Section title="yt-dlp" hint={system ? `Version ${system.ytdlp}${system.media_free_gb !== null ? ` · ${system.media_free_gb} GB free of ${system.media_total_gb} GB` : ""}` : undefined}>

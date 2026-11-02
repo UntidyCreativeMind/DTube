@@ -1,6 +1,6 @@
 import { AlertTriangle, Clapperboard, Loader2, RotateCcw, Tv, X } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
-import { api, Job, Preview, Queue } from "../api";
+import { AD_LEVELS, AdLevel, api, Job, Preview, Queue, Settings } from "../api";
 
 function useQueue() {
   const [queue, setQueue] = useState<Queue>({ paused: "", jobs: [] });
@@ -97,9 +97,17 @@ export default function DownloadsPage() {
   const [preview, setPreview] = useState<Preview | null>(null);
   const [mode, setMode] = useState<"tv" | "movie">("tv");
   const [subscribe, setSubscribe] = useState(false);
+  const [defaultAds, setDefaultAds] = useState<AdLevel>("off");
+  const [adRemoval, setAdRemoval] = useState<AdLevel>("off");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    api<Settings>("/settings")
+      .then((s) => { setDefaultAds(s.default_ad_removal); setAdRemoval(s.default_ad_removal); })
+      .catch(() => {});
+  }, []);
 
   const lookUp = async (event: FormEvent) => {
     event.preventDefault();
@@ -119,11 +127,12 @@ export default function DownloadsPage() {
     setBusy(true);
     setError("");
     try {
-      const result = await api("/sources", "POST", { url, mode, subscribe });
+      const result = await api("/sources", "POST", { url, mode, subscribe, ad_removal: adRemoval });
       setMessage(result.added ? `Queued ${result.added} ${result.added === 1 ? "video" : "videos"}.` : "Nothing new to download.");
       setUrl("");
       setPreview(null);
       setSubscribe(false);
+      setAdRemoval(defaultAds);
     } catch (err) {
       setError((err as Error).message);
     }
@@ -178,6 +187,18 @@ export default function DownloadsPage() {
               ) : (
                 <p className="flex items-center gap-2 text-sm text-muted"><Clapperboard size={15} /> Single videos download as movies</p>
               )}
+              <div className="space-y-1.5">
+                <p className="text-sm text-muted">Ad removal</p>
+                <div className="inline-flex max-w-full flex-wrap rounded-lg border border-line p-0.5">
+                  {AD_LEVELS.map(({ id, label }) => (
+                    <button key={id} type="button" onClick={() => setAdRemoval(id)} aria-pressed={adRemoval === id}
+                      className={`rounded-md px-3 py-1.5 text-sm ${adRemoval === id ? "bg-raised text-white" : "text-muted"}`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-xs text-muted">{AD_LEVELS.find((l) => l.id === adRemoval)!.hint}</p>
+              </div>
               <button className="btn btn-primary" onClick={add} disabled={busy}>Download</button>
             </div>
           </div>

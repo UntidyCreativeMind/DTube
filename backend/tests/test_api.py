@@ -125,6 +125,84 @@ def test_redownload_is_explicit(admin):
     assert row["force"] == 1
 
 
+def test_ad_removal_defaults_to_the_setting(admin, monkeypatch):
+    probe_as(monkeypatch, VIDEO)
+    admin.put("/api/settings", json={"default_ad_removal": "conservative"})
+    admin.post("/api/sources", json={"url": "https://youtu.be/v"})
+    assert job_rows()[0]["ad_removal"] == "conservative"
+
+
+def test_ad_removal_rejects_unknown_levels(admin, monkeypatch):
+    probe_as(monkeypatch, VIDEO)
+    body = {"url": "https://youtu.be/v", "ad_removal": "extreme"}
+    assert admin.post("/api/sources", json=body).status_code == 400
+    assert admin.put("/api/settings", json={"default_ad_removal": "extreme"}).status_code == 400
+    assert admin.put("/api/settings", json={"default_ad_removal": ""}).status_code == 400
+
+
+def test_playlist_level_applies_to_later_checks(admin, monkeypatch):
+    probe_as(monkeypatch, PLAYLIST)
+    url = "https://www.youtube.com/playlist?list=PL1"
+    admin.post("/api/sources", json={"url": url, "mode": "tv"})
+    source_id = admin.get("/api/sources").json()[0]["id"]
+    admin.patch(f"/api/sources/{source_id}", json={"ad_removal": "aggressive"})
+    source = admin.get("/api/sources").json()[0]
+    assert source["ad_removal"] == "aggressive"
+    assert source["subscribed"] == 0
+    admin.delete("/api/jobs/finished")
+    with db.connect() as conn:
+        conn.execute("UPDATE jobs SET status = 'cancelled'")
+    admin.post(f"/api/sources/{source_id}/check")
+    assert [r["ad_removal"] for r in job_rows()][-2:] == ["aggressive", "aggressive"]
+
+
+def test_redownload_keeps_or_changes_the_level(admin):
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO placements (id, video_id, mode, show_id, path, created_at, ad_removal) "
+            "VALUES (1, 'a', 'movie', 0, 'x', 0, 'conservative')"
+        )
+    admin.post("/api/history/1/redownload")
+    assert job_rows()[0]["ad_removal"] == "conservative"
+    with db.connect() as conn:
+        conn.execute("UPDATE jobs SET status = 'done'")
+    admin.post("/api/history/1/redownload", json={"ad_removal": "aggressive"})
+    assert job_rows()[1]["ad_removal"] == "aggressive"
+
+
+def test_ad_levels_map_to_sponsorblock_categories(tmp_path, monkeypatch):
+    captured = {}
+
+    class Stop(Exception):
+        pass
+
+    def fake_popen(args, **kwargs):
+        captured["args"] = args
+        raise Stop
+
+    monkeypatch.setattr(ytdlp.subprocess, "Popen", fake_popen)
+    for level, expected in (("conservative", "selfpromo,interaction"),
+                            ("aggressive", "selfpromo,interaction,sponsor")):
+        with pytest.raises(Stop):
+            ytdlp.download("a", tmp_path, 1080, level, None, None)
+        args = captured["args"]
+        assert args[args.index("--sponsorblock-remove") + 1] == expected
+        assert args.index("--sponsorblock-remove") < args.index("--")
+    with pytest.raises(Stop):
+        ytdlp.download("a", tmp_path, 1080, "off", None, None)
+    assert "--sponsorblock-remove" not in captured["args"]
+
+
+def test_old_database_gains_ad_removal_columns():
+    with db.connect() as conn:
+        conn.execute("DROP TABLE sources")
+        conn.execute("CREATE TABLE sources (id INTEGER PRIMARY KEY, title TEXT)")
+        conn.execute("INSERT INTO sources (title) VALUES ('old')")
+    db.init()
+    with db.connect() as conn:
+        assert conn.execute("SELECT ad_removal FROM sources").fetchone()[0] == "off"
+
+
 def test_settings_hide_the_plex_token(admin):
     admin.put("/api/settings", json={"plex_token": "secret", "plex_url": "http://plex:32400"})
     body = admin.get("/api/settings")
@@ -168,7 +246,8 @@ def test_download_pipeline_files_a_tv_episode(admin, monkeypatch, tmp_path):
                      "movie_dir": str(media / "movies"), "min_free_gb": 0})
     probe_as(monkeypatch, PLAYLIST)
 
-    def fake_download(video_id, folder, quality, on_progress, on_start):
+    def fake_download(video_id, folder, quality, ad_removal, on_progress, on_start):
+        assert ad_removal == "aggressive"
         on_progress(50, 1000, 5)
         video = folder / "video.mp4"
         video.write_bytes(b"data")
@@ -177,7 +256,8 @@ def test_download_pipeline_files_a_tv_episode(admin, monkeypatch, tmp_path):
         return {"info": info, "video": video, "thumbnail": None}
 
     monkeypatch.setattr(ytdlp, "download", fake_download)
-    admin.post("/api/sources", json={"url": "https://www.youtube.com/playlist?list=PL1", "mode": "tv"})
+    admin.post("/api/sources", json={"url": "https://www.youtube.com/playlist?list=PL1", "mode": "tv",
+                                     "ad_removal": "aggressive"})
     for _ in range(2):
         worker._run(worker._next_job())
 
@@ -229,6 +309,8 @@ def test_error_text_drops_yt_dlp_help():
     output = "ERROR: [youtube] abc-1_x: Private video. If the owner has granted you access, sign in."
     assert ytdlp._error_text(output) == "Private video."
     assert "cookies in Settings" in ytdlp._error_text("ERROR: [youtube] a: Sign in to confirm you're not a bot.")
+    down = "ERROR: Preprocessing: Unable to communicate with SponsorBlock API: HTTPConnection(host='x')"
+    assert ytdlp._error_text(down).startswith("Couldn't reach SponsorBlock")
 
 
 def test_frontend_routes(client, monkeypatch, tmp_path):

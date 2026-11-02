@@ -116,6 +116,7 @@ DEFAULTS = {
     "min_free_gb": 10,
     "check_hours": 6,
     "ytdlp_auto_update": True,
+    "default_ad_removal": "off",
 }
 
 
@@ -148,6 +149,10 @@ def init():
     with connect() as conn:
         conn.execute("PRAGMA journal_mode = WAL")
         conn.executescript(SCHEMA)
+        for table in ("sources", "jobs", "placements"):
+            columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if "ad_removal" not in columns:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN ad_removal TEXT NOT NULL DEFAULT 'off'")
 
 
 def get_settings() -> dict:

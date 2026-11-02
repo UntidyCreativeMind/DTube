@@ -54,10 +54,16 @@ class UrlRequest(BaseModel):
 class AddRequest(UrlRequest):
     mode: str = "tv"
     subscribe: bool = False
+    ad_removal: str = ""
 
 
 class SourceUpdate(BaseModel):
-    subscribed: bool
+    subscribed: bool | None = None
+    ad_removal: str | None = None
+
+
+class RedownloadRequest(BaseModel):
+    ad_removal: str = ""
 
 
 class PlexRequest(BaseModel):
@@ -141,6 +147,14 @@ def _checked_url(url: str) -> str:
         raise HTTPException(400, str(exc))
 
 
+def _checked_ad_level(value: str, fallback: str) -> str:
+    if not value:
+        return fallback
+    if value not in ytdlp.AD_CATEGORIES:
+        raise HTTPException(400, "Ad removal must be off, conservative or aggressive")
+    return value
+
+
 def _probe(url: str) -> dict:
     try:
         return ytdlp.probe(url)
@@ -166,12 +180,13 @@ def preview(body: UrlRequest):
 def add_source(body: AddRequest):
     if body.mode not in ("tv", "movie"):
         raise HTTPException(400, "Mode must be tv or movie")
+    ad_removal = _checked_ad_level(body.ad_removal, db.get_settings()["default_ad_removal"])
     url = _checked_url(body.url)
     info = _probe(url)
 
     if info["type"] == "video":
         with db.transaction() as conn:
-            added = worker.enqueue(conn, info["video_id"], info["title"], "movie")
+            added = worker.enqueue(conn, info["video_id"], info["title"], "movie", ad_removal=ad_removal)
         return {"type": "video", "added": int(added)}
 
     with db.transaction() as conn:
@@ -180,11 +195,11 @@ def add_source(body: AddRequest):
             show = library.get_or_create_show(conn, info["playlist_id"], info["title"], info["description"])
             show_id = show["id"]
         conn.execute(
-            "INSERT INTO sources (url, playlist_id, title, mode, show_id, subscribed) "
-            "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (playlist_id, mode) "
+            "INSERT INTO sources (url, playlist_id, title, mode, show_id, subscribed, ad_removal) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (playlist_id, mode) "
             "DO UPDATE SET url = excluded.url, title = excluded.title, "
-            "subscribed = MAX(subscribed, excluded.subscribed)",
-            (url, info["playlist_id"], info["title"], body.mode, show_id, int(body.subscribe)),
+            "ad_removal = excluded.ad_removal, subscribed = MAX(subscribed, excluded.subscribed)",
+            (url, info["playlist_id"], info["title"], body.mode, show_id, int(body.subscribe), ad_removal),
         )
         source = conn.execute(
             "SELECT * FROM sources WHERE playlist_id = ? AND mode = ?", (info["playlist_id"], body.mode)
@@ -206,7 +221,11 @@ def list_sources():
 @api.patch("/sources/{source_id}")
 def update_source(source_id: int, body: SourceUpdate):
     with db.connect() as conn:
-        conn.execute("UPDATE sources SET subscribed = ? WHERE id = ?", (int(body.subscribed), source_id))
+        if body.subscribed is not None:
+            conn.execute("UPDATE sources SET subscribed = ? WHERE id = ?", (int(body.subscribed), source_id))
+        if body.ad_removal:
+            level = _checked_ad_level(body.ad_removal, "off")
+            conn.execute("UPDATE sources SET ad_removal = ? WHERE id = ?", (level, source_id))
     return {"ok": True}
 
 
@@ -282,7 +301,7 @@ def history(q: str = "", page: int = 1, size: int = 50):
     with db.connect() as conn:
         total = conn.execute(f"SELECT COUNT(*) {where}", (pattern, pattern)).fetchone()[0]
         rows = conn.execute(
-            "SELECT p.id, p.video_id, p.mode, p.season, p.episode, p.path, p.missing, p.created_at, "
+            "SELECT p.id, p.video_id, p.mode, p.season, p.episode, p.path, p.missing, p.created_at, p.ad_removal, "
             f"COALESCE(v.title, p.video_id) AS title, v.channel, s.title AS show {where} "
             "ORDER BY p.created_at DESC LIMIT ? OFFSET ?",
             (pattern, pattern, size, (max(page, 1) - 1) * size),
@@ -296,14 +315,17 @@ def scan_history():
 
 
 @api.post("/history/{placement_id}/redownload")
-def redownload(placement_id: int):
+def redownload(placement_id: int, body: RedownloadRequest | None = None):
     with db.transaction() as conn:
         row = conn.execute("SELECT * FROM placements WHERE id = ?", (placement_id,)).fetchone()
         if not row:
             raise HTTPException(404, "Not in history")
+        level = _checked_ad_level(body.ad_removal if body else "", row["ad_removal"])
         video = conn.execute("SELECT title FROM videos WHERE video_id = ?", (row["video_id"],)).fetchone()
         title = video["title"] if video else row["video_id"]
-        queued = worker.enqueue(conn, row["video_id"], title, row["mode"], row["show_id"], force=True)
+        queued = worker.enqueue(
+            conn, row["video_id"], title, row["mode"], row["show_id"], force=True, ad_removal=level
+        )
     return {"queued": queued}
 
 
@@ -336,6 +358,8 @@ def put_settings(values: dict):
     unknown = set(values) - EDITABLE
     if unknown:
         raise HTTPException(400, f"Unknown settings: {', '.join(sorted(unknown))}")
+    if "default_ad_removal" in values:
+        _checked_ad_level(values["default_ad_removal"] or "invalid", "off")
     for key, minimum in NUMBER_KEYS.items():
         if key in values:
             if type(values[key]) not in (int, float) or values[key] < minimum:

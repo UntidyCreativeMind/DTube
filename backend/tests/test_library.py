@@ -109,8 +109,9 @@ def test_second_playlist_links_existing_file(tmp_path):
     Path(placement["path"]).parent.mkdir(parents=True)
     Path(placement["path"]).write_bytes(b"video")
 
-    existing = library.find_existing_file("a", second_show)
+    existing = library.find_existing_file("a", second_show, "off")
     assert existing == Path(placement["path"])
+    assert library.find_existing_file("a", second_show, "aggressive") is None
     linked = place(video("a"), second_show, tmp_path)
     library.install_video(existing, linked, link=True)
     assert Path(linked["path"]).read_bytes() == b"video"

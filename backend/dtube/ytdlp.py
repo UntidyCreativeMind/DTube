@@ -19,6 +19,11 @@ UNAVAILABLE = re.compile(
     re.IGNORECASE,
 )
 HIDDEN_TITLES = {"[Private video]", "[Deleted video]"}
+AD_CATEGORIES = {
+    "off": [],
+    "conservative": ["selfpromo", "interaction"],
+    "aggressive": ["selfpromo", "interaction", "sponsor"],
+}
 
 
 class YtdlpError(Exception):
@@ -61,6 +66,8 @@ def _base_args() -> list:
 def _error_text(output: str) -> str:
     errors = [line for line in output.splitlines() if line.startswith("ERROR:")]
     text = (errors[-1] if errors else output.strip()[-300:]) or "yt-dlp failed"
+    if "Unable to communicate with SponsorBlock" in text:
+        return "Couldn't reach SponsorBlock, so ads couldn't be removed. The video wasn't filed."
     text = re.sub(r"^ERROR:\s*(\[\w+\] [\w-]+: )?", "", text)
     text = re.split(r" If the owner| Use --cookies| See  ?https?://", text)[0].strip()
     if "not a bot" in text or "HTTP Error 429" in text:
@@ -102,7 +109,7 @@ def format_selector(quality: int) -> str:
     return f"bv*{q}[vcodec^=avc1]+ba[ext=m4a]/b{q}[vcodec^=avc1]/bv*{q}+ba/b{q}/b"
 
 
-def download(video_id: str, folder: Path, quality: int, on_progress, on_start) -> dict:
+def download(video_id: str, folder: Path, quality: int, ad_removal: str, on_progress, on_start) -> dict:
     """Download into `folder` and return the info, video path and thumbnail path."""
     template = (
         "download:DTUBE|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|"
@@ -114,8 +121,10 @@ def download(video_id: str, folder: Path, quality: int, on_progress, on_start) -
         "-f", format_selector(quality), "--merge-output-format", "mp4",
         "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg",
         "--progress-template", template, "-o", str(folder / "video.%(ext)s"),
-        "--", f"https://www.youtube.com/watch?v={video_id}",
     ]
+    if AD_CATEGORIES[ad_removal]:
+        args += ["--sponsorblock-remove", ",".join(AD_CATEGORIES[ad_removal])]
+    args += ["--", f"https://www.youtube.com/watch?v={video_id}"]
     proc = subprocess.Popen(
         args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=_env(),
         errors="replace",
