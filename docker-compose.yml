@@ -1,6 +1,6 @@
 services:
   dtube:
-    build: .
+    image: ghcr.io/untidycreativemind/dtube:latest
     container_name: dtube
     restart: unless-stopped
     ports:

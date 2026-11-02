@@ -129,10 +129,10 @@ export default function SettingsPage() {
     setStatus("Saving…");
     const { plex_token_set: _unused, ...values } = form;
     try {
-      const saved = await api("/settings", "PUT", { ...values, plex_token: token });
+      const { restarting, ...saved } = await api("/settings", "PUT", { ...values, plex_token: token });
       setForm(saved);
       setToken("");
-      setStatus(saved.restarting ? "Saved. DTube is restarting to apply the new file owner." : "Saved.");
+      setStatus(restarting ? "Saved. DTube is restarting to apply the new file owner." : "Saved.");
     } catch (err) {
       setStatus((err as Error).message);
     }
@@ -235,7 +235,7 @@ export default function SettingsPage() {
       </Section>
 
       <Section title="Downloads">
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Maximum quality">
             <select className="field" value={form.quality} onChange={number("quality") as never}>
               {[480, 720, 1080, 1440, 2160].map((q) => <option key={q} value={q}>{q}p</option>)}
@@ -243,9 +243,6 @@ export default function SettingsPage() {
           </Field>
           <Field label="Keep free (GB)">
             <input className="field" type="number" min={0} value={form.min_free_gb} onChange={number("min_free_gb")} />
-          </Field>
-          <Field label="Check playlists every (hours)">
-            <input className="field" type="number" min={1} value={form.check_hours} onChange={number("check_hours")} />
           </Field>
         </div>
         <p className="text-xs text-muted">Above 1080p, YouTube usually sends VP9 or AV1, which can make Plex transcode.</p>

@@ -14,6 +14,8 @@ from . import db, library, plex, ytdlp
 log = logging.getLogger("dtube")
 RETRY_DELAYS = [60, 600]
 ACTIVE = ("queued", "downloading", "processing")
+# YouTube can't notify DTube about new videos, so "immediate" is a short polling interval.
+CHECK_INTERVALS = {"immediate": 300, "hourly": 3600, "daily": 86400}
 
 state = {"paused": ""}
 _current_proc = None
@@ -241,22 +243,30 @@ def _worker_loop():
             time.sleep(10)
 
 
+def due_sources(now: float) -> list:
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT id, check_frequency, last_checked FROM sources WHERE check_frequency != 'off'"
+        ).fetchall()
+    return [
+        row["id"] for row in rows
+        if now - (row["last_checked"] or 0) >= CHECK_INTERVALS[row["check_frequency"]]
+    ]
+
+
 def _scheduler_loop():
     last_update = 0
     while True:
         try:
             settings = db.get_settings()
-            cutoff = time.time() - float(settings["check_hours"]) * 3600
-            with db.connect() as conn:
-                due = conn.execute(
-                    "SELECT id FROM sources WHERE subscribed = 1 AND COALESCE(last_checked, 0) < ?",
-                    (cutoff,),
-                ).fetchall()
-            for row in due:
+            for source_id in due_sources(time.time()):
+                # Recorded first, so a failed check waits for its next turn.
+                with db.connect() as conn:
+                    conn.execute("UPDATE sources SET last_checked = ? WHERE id = ?", (time.time(), source_id))
                 try:
-                    refresh_source(row["id"])
+                    refresh_source(source_id)
                 except Exception as exc:
-                    log.warning("Checking source %s failed: %s", row["id"], exc)
+                    log.warning("Checking source %s failed: %s", source_id, exc)
             if settings["ytdlp_auto_update"] and time.time() - last_update > 86400:
                 last_update = time.time()
                 ytdlp.update()

@@ -57,6 +57,10 @@
 A title that would collide with another video's folder gets the video ID added.
 ```
 
+## New video checks
+
+Each playlist has its own check frequency: off, immediate, hourly or daily. YouTube has no notification for playlist changes, so immediate means checking every 5 minutes. A failed check waits for its next turn.
+
 ## Ad removal
 
 YouTube's own ad breaks are never in a download. Each download picks a level for the segments creators build into videos, which yt-dlp cuts using SponsorBlock:
@@ -85,7 +89,11 @@ Separate libraries with the Plex NFO Series and Plex NFO Movie agents avoid fals
 
 ## Settings held in the UI
 
-Temp, TV and movie folders, Plex connection and libraries, path mapping, file owner, cookies, video quality, schedule, disk space limit and yt-dlp updates.
+Temp, TV and movie folders, Plex connection and libraries, path mapping, file owner, cookies, video quality, default ad removal, disk space limit and yt-dlp updates.
+
+## Image
+
+GitHub Actions runs the tests, builds the image, starts it and checks it responds, then publishes it to `ghcr.io/untidycreativemind/dtube`. The image is published only if those steps pass.
 
 ## Defaults
 

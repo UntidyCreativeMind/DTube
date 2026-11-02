@@ -148,7 +148,7 @@ def test_playlist_level_applies_to_later_checks(admin, monkeypatch):
     admin.patch(f"/api/sources/{source_id}", json={"ad_removal": "aggressive"})
     source = admin.get("/api/sources").json()[0]
     assert source["ad_removal"] == "aggressive"
-    assert source["subscribed"] == 0
+    assert source["check_frequency"] == "off"
     admin.delete("/api/jobs/finished")
     with db.connect() as conn:
         conn.execute("UPDATE jobs SET status = 'cancelled'")
@@ -193,14 +193,56 @@ def test_ad_levels_map_to_sponsorblock_categories(tmp_path, monkeypatch):
     assert "--sponsorblock-remove" not in captured["args"]
 
 
-def test_old_database_gains_ad_removal_columns():
+def test_old_database_is_upgraded():
     with db.connect() as conn:
         conn.execute("DROP TABLE sources")
-        conn.execute("CREATE TABLE sources (id INTEGER PRIMARY KEY, title TEXT)")
-        conn.execute("INSERT INTO sources (title) VALUES ('old')")
+        conn.execute("CREATE TABLE sources (id INTEGER PRIMARY KEY, title TEXT, subscribed INTEGER)")
+        conn.execute("INSERT INTO sources (title, subscribed) VALUES ('checked', 1), ('manual', 0)")
+    db.init()
     db.init()
     with db.connect() as conn:
-        assert conn.execute("SELECT ad_removal FROM sources").fetchone()[0] == "off"
+        rows = conn.execute("SELECT ad_removal, check_frequency FROM sources ORDER BY id").fetchall()
+    assert [tuple(r) for r in rows] == [("off", "daily"), ("off", "off")]
+
+
+def test_retired_settings_do_not_come_back():
+    db.set_settings({"check_hours": 6})
+    assert "check_hours" not in db.get_settings()
+
+
+def test_each_playlist_has_its_own_check_frequency(admin, monkeypatch):
+    probe_as(monkeypatch, PLAYLIST)
+    url = "https://www.youtube.com/playlist?list=PL1"
+    body = {"url": url, "mode": "tv", "check_frequency": "hourly"}
+    admin.post("/api/sources", json=body)
+    source = admin.get("/api/sources").json()[0]
+    assert source["check_frequency"] == "hourly"
+
+    admin.post("/api/sources", json={"url": url, "mode": "tv"})
+    assert admin.get("/api/sources").json()[0]["check_frequency"] == "hourly"
+
+    admin.patch(f"/api/sources/{source['id']}", json={"check_frequency": "daily"})
+    assert admin.get("/api/sources").json()[0]["check_frequency"] == "daily"
+    response = admin.patch(f"/api/sources/{source['id']}", json={"check_frequency": "weekly"})
+    assert response.status_code == 400
+    assert admin.post("/api/sources", json={**body, "check_frequency": "weekly"}).status_code == 400
+
+
+def test_due_sources_follow_each_frequency():
+    now = 1_000_000
+    rows = [
+        ("off", now - 999_999), ("immediate", now - 299), ("immediate", now - 300),
+        ("hourly", now - 3599), ("hourly", now - 3600),
+        ("daily", now - 86399), ("daily", now - 86400), ("daily", None),
+    ]
+    with db.connect() as conn:
+        for index, (frequency, checked) in enumerate(rows, 1):
+            conn.execute(
+                "INSERT INTO sources (id, url, playlist_id, title, mode, check_frequency, last_checked) "
+                "VALUES (?, 'u', ?, 't', 'tv', ?, ?)",
+                (index, f"PL{index}", frequency, checked),
+            )
+    assert worker.due_sources(now) == [3, 5, 7, 8]
 
 
 def test_settings_hide_the_plex_token(admin):
@@ -219,7 +261,8 @@ def test_settings_reject_folders_outside_media(admin):
 
 def test_settings_reject_bad_values(admin):
     assert admin.put("/api/settings", json={"unknown": 1}).status_code == 400
-    assert admin.put("/api/settings", json={"check_hours": 0}).status_code == 400
+    assert admin.put("/api/settings", json={"check_hours": 6}).status_code == 400
+    assert admin.put("/api/settings", json={"min_free_gb": -1}).status_code == 400
     assert admin.put("/api/settings", json={"quality": "best"}).status_code == 400
 
 

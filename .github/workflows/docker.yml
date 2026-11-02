@@ -1,0 +1,73 @@
+name: Docker image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/untidycreativemind/dtube
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Run backend tests
+        run: |
+          pip install -r backend/requirements.txt pytest
+          PYTHONPATH=backend pytest backend/tests -q
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: dtube:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start the image and check it works
+        run: |
+          mkdir -p smoke/config smoke/media
+          docker run -d --name dtube -p 3434:3434 \
+            -v "$PWD/smoke/config:/config" -v "$PWD/smoke/media:/media" dtube:test
+          for attempt in $(seq 1 30); do
+            curl -fs http://localhost:3434/api/auth/status > status.json && break
+            sleep 1
+          done
+          grep -q '"needs_setup":true' status.json
+          curl -fs http://localhost:3434/ | grep -q 'id="root"'
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3434/api/settings)" = 401
+          grep -Eq '^Uid:\s+1000\b' <(docker exec dtube cat /proc/1/status)
+          docker exec dtube python -m yt_dlp --version
+          docker exec dtube deno --version
+          docker exec dtube ffmpeg -version
+
+      - name: Show container logs
+        if: failure()
+        run: docker logs dtube || true
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish image
+        run: |
+          docker tag dtube:test "$IMAGE:latest"
+          docker tag dtube:test "$IMAGE:sha-${GITHUB_SHA::7}"
+          docker push "$IMAGE:latest"
+          docker push "$IMAGE:sha-${GITHUB_SHA::7}"

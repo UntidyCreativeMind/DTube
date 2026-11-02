@@ -1,6 +1,6 @@
 import { AlertTriangle, Clapperboard, Loader2, RotateCcw, Tv, X } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
-import { AD_LEVELS, AdLevel, api, Job, Preview, Queue, Settings } from "../api";
+import { AD_LEVELS, AdLevel, api, CHECK_FREQUENCIES, CheckFrequency, Job, Preview, Queue, Settings } from "../api";
 
 function useQueue() {
   const [queue, setQueue] = useState<Queue>({ paused: "", jobs: [] });
@@ -96,7 +96,7 @@ export default function DownloadsPage() {
   const [url, setUrl] = useState("");
   const [preview, setPreview] = useState<Preview | null>(null);
   const [mode, setMode] = useState<"tv" | "movie">("tv");
-  const [subscribe, setSubscribe] = useState(false);
+  const [checkFrequency, setCheckFrequency] = useState<CheckFrequency>("off");
   const [defaultAds, setDefaultAds] = useState<AdLevel>("off");
   const [adRemoval, setAdRemoval] = useState<AdLevel>("off");
   const [busy, setBusy] = useState(false);
@@ -127,11 +127,11 @@ export default function DownloadsPage() {
     setBusy(true);
     setError("");
     try {
-      const result = await api("/sources", "POST", { url, mode, subscribe, ad_removal: adRemoval });
+      const result = await api("/sources", "POST", { url, mode, check_frequency: checkFrequency, ad_removal: adRemoval });
       setMessage(result.added ? `Queued ${result.added} ${result.added === 1 ? "video" : "videos"}.` : "Nothing new to download.");
       setUrl("");
       setPreview(null);
-      setSubscribe(false);
+      setCheckFrequency("off");
       setAdRemoval(defaultAds);
     } catch (err) {
       setError((err as Error).message);
@@ -179,9 +179,12 @@ export default function DownloadsPage() {
                       </button>
                     ))}
                   </div>
-                  <label className="flex items-center gap-2 text-sm text-muted">
-                    <input type="checkbox" checked={subscribe} onChange={(e) => setSubscribe(e.target.checked)} />
-                    Keep checking for new videos
+                  <label className="flex flex-wrap items-center gap-2 text-sm text-muted">
+                    Check for new videos
+                    <select className="field !w-auto !py-1" value={checkFrequency}
+                      onChange={(e) => setCheckFrequency(e.target.value as CheckFrequency)}>
+                      {CHECK_FREQUENCIES.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
+                    </select>
                   </label>
                 </div>
               ) : (

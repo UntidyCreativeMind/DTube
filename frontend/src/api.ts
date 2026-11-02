@@ -21,6 +21,15 @@ export const AD_LEVELS: { id: AdLevel; label: string; hint: string }[] = [
   { id: "aggressive", label: "Aggressive", hint: "Also cuts paid sponsor segments." },
 ];
 
+export type CheckFrequency = "off" | "immediate" | "hourly" | "daily";
+
+export const CHECK_FREQUENCIES: { id: CheckFrequency; label: string }[] = [
+  { id: "off", label: "Off" },
+  { id: "immediate", label: "Immediate (every 5 minutes)" },
+  { id: "hourly", label: "Hourly" },
+  { id: "daily", label: "Daily" },
+];
+
 export type Job = {
   id: number;
   video_id: string;
@@ -49,7 +58,7 @@ export type Source = {
   title: string;
   url: string;
   mode: "tv" | "movie";
-  subscribed: number;
+  check_frequency: CheckFrequency;
   ad_removal: AdLevel;
   last_checked: number | null;
   done: number;
@@ -84,7 +93,6 @@ export type Settings = {
   file_gid: number;
   quality: number;
   min_free_gb: number;
-  check_hours: number;
   ytdlp_auto_update: boolean;
   default_ad_removal: AdLevel;
 };

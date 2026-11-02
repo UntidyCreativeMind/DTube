@@ -1,6 +1,6 @@
 import { Clapperboard, RefreshCw, Trash2, Tv } from "lucide-react";
 import { useEffect, useState } from "react";
-import { AD_LEVELS, AdLevel, api, Source } from "../api";
+import { AD_LEVELS, AdLevel, api, CHECK_FREQUENCIES, CheckFrequency, Source } from "../api";
 
 export default function PlaylistsPage() {
   const [sources, setSources] = useState<Source[] | null>(null);
@@ -25,8 +25,8 @@ export default function PlaylistsPage() {
     load();
   };
 
-  const toggle = (source: Source) =>
-    api(`/sources/${source.id}`, "PATCH", { subscribed: !source.subscribed }).then(load).catch((e) => setMessage(e.message));
+  const setCheckFrequency = (source: Source, check_frequency: CheckFrequency) =>
+    api(`/sources/${source.id}`, "PATCH", { check_frequency }).then(load).catch((e) => setMessage(e.message));
 
   const setAdRemoval = (source: Source, ad_removal: AdLevel) =>
     api(`/sources/${source.id}`, "PATCH", { ad_removal }).then(load).catch((e) => setMessage(e.message));
@@ -63,8 +63,11 @@ export default function PlaylistsPage() {
                 </select>
               </label>
               <label className="flex items-center gap-2 text-xs text-muted">
-                <input type="checkbox" checked={!!source.subscribed} onChange={() => toggle(source)} />
-                Auto-check
+                Check for new videos
+                <select className="field !w-auto !py-1 text-xs" value={source.check_frequency}
+                  onChange={(e) => setCheckFrequency(source, e.target.value as CheckFrequency)}>
+                  {CHECK_FREQUENCIES.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
+                </select>
               </label>
               <button className="btn" onClick={() => check(source)} disabled={checking === source.id}>
                 <RefreshCw size={14} className={checking === source.id ? "animate-spin" : ""} /> Check now

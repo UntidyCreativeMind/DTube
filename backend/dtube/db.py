@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS sources (
     title TEXT NOT NULL,
     mode TEXT NOT NULL CHECK (mode IN ('tv', 'movie')),
     show_id INTEGER NOT NULL DEFAULT 0,
-    subscribed INTEGER NOT NULL DEFAULT 0,
+    check_frequency TEXT NOT NULL DEFAULT 'off',
     last_checked REAL,
     UNIQUE (playlist_id, mode)
 );
@@ -114,7 +114,6 @@ DEFAULTS = {
     "file_gid": 1000,
     "quality": 1080,
     "min_free_gb": 10,
-    "check_hours": 6,
     "ytdlp_auto_update": True,
     "default_ad_removal": "off",
 }
@@ -153,12 +152,17 @@ def init():
             columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
             if "ad_removal" not in columns:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN ad_removal TEXT NOT NULL DEFAULT 'off'")
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(sources)")}
+        if "check_frequency" not in columns:
+            conn.execute("ALTER TABLE sources ADD COLUMN check_frequency TEXT NOT NULL DEFAULT 'off'")
+            if "subscribed" in columns:
+                conn.execute("UPDATE sources SET check_frequency = 'daily' WHERE subscribed = 1")
 
 
 def get_settings() -> dict:
     with connect() as conn:
         rows = conn.execute("SELECT key, value FROM settings").fetchall()
-    return {**DEFAULTS, **{r["key"]: json.loads(r["value"]) for r in rows}}
+    return {**DEFAULTS, **{r["key"]: json.loads(r["value"]) for r in rows if r["key"] in DEFAULTS}}
 
 
 def set_settings(values: dict):

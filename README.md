@@ -7,6 +7,7 @@ Paste a URL, and DTube downloads the video and files it into Plex as a TV show o
 - **Playlists** download in TV mode or Movie mode, chosen each time.
 - **Single videos** always download as movies.
 - **Download history** stops videos downloading twice unless you ask.
+- **New video checks** are set per playlist: off, immediate (every 5 minutes), hourly or daily.
 - **Ad removal** cuts creator-inserted ads with [SponsorBlock](https://sponsor.ajay.app/), at a level you pick for each download.
 - **Cookies** are optional. DTube works without them.
 
@@ -22,23 +23,29 @@ Episode numbers are permanent. Reordering a playlist or deleting a video never r
 
 ## Install
 
-On the machine that will run DTube:
-
-```sh
-git clone https://github.com/UntidyCreativeMind/DTube.git
-cd DTube
-```
-
-Edit one line in `docker-compose.yml` so it points at the parent folder of your media:
+GitHub builds the image on every push to `main`, and it runs on 64-bit x86 machines. On the machine that will run DTube, put [`docker-compose.yml`](docker-compose.yml) in a folder and edit one line so it points at the parent folder of your media:
 
 ```yaml
 - /your/media/folder:/media
 ```
 
+While the repo is private, log in to the image registry once, using a [personal access token](https://github.com/settings/tokens) with the `read:packages` scope:
+
+```sh
+docker login ghcr.io -u UntidyCreativeMind
+```
+
 Then start it:
 
 ```sh
-docker compose up -d --build
+docker compose up -d
+```
+
+To update later:
+
+```sh
+docker compose pull
+docker compose up -d
 ```
 
 Open `http://<host>:3434` and create your admin login straight away. Until you do, anyone who can reach the port can create it, so do this before adding a reverse proxy.

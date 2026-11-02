@@ -18,7 +18,7 @@ from .db import MEDIA_ROOT
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 FOLDER_KEYS = ("temp_dir", "tv_dir", "movie_dir")
 EDITABLE = set(db.DEFAULTS)
-NUMBER_KEYS = {"file_uid": 0, "file_gid": 0, "quality": 144, "min_free_gb": 0, "check_hours": 1}
+NUMBER_KEYS = {"file_uid": 0, "file_gid": 0, "quality": 144, "min_free_gb": 0}
 RECENT_JOBS = 100
 
 
@@ -53,12 +53,12 @@ class UrlRequest(BaseModel):
 
 class AddRequest(UrlRequest):
     mode: str = "tv"
-    subscribe: bool = False
+    check_frequency: str = "off"
     ad_removal: str = ""
 
 
 class SourceUpdate(BaseModel):
-    subscribed: bool | None = None
+    check_frequency: str | None = None
     ad_removal: str | None = None
 
 
@@ -155,6 +155,12 @@ def _checked_ad_level(value: str, fallback: str) -> str:
     return value
 
 
+def _checked_frequency(value: str) -> str:
+    if value != "off" and value not in worker.CHECK_INTERVALS:
+        raise HTTPException(400, "Check frequency must be off, immediate, hourly or daily")
+    return value
+
+
 def _probe(url: str) -> dict:
     try:
         return ytdlp.probe(url)
@@ -181,6 +187,7 @@ def add_source(body: AddRequest):
     if body.mode not in ("tv", "movie"):
         raise HTTPException(400, "Mode must be tv or movie")
     ad_removal = _checked_ad_level(body.ad_removal, db.get_settings()["default_ad_removal"])
+    frequency = _checked_frequency(body.check_frequency)
     url = _checked_url(body.url)
     info = _probe(url)
 
@@ -195,11 +202,12 @@ def add_source(body: AddRequest):
             show = library.get_or_create_show(conn, info["playlist_id"], info["title"], info["description"])
             show_id = show["id"]
         conn.execute(
-            "INSERT INTO sources (url, playlist_id, title, mode, show_id, subscribed, ad_removal) "
+            "INSERT INTO sources (url, playlist_id, title, mode, show_id, check_frequency, ad_removal) "
             "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (playlist_id, mode) "
-            "DO UPDATE SET url = excluded.url, title = excluded.title, "
-            "ad_removal = excluded.ad_removal, subscribed = MAX(subscribed, excluded.subscribed)",
-            (url, info["playlist_id"], info["title"], body.mode, show_id, int(body.subscribe), ad_removal),
+            "DO UPDATE SET url = excluded.url, title = excluded.title, ad_removal = excluded.ad_removal, "
+            "check_frequency = CASE excluded.check_frequency WHEN 'off' THEN check_frequency "
+            "ELSE excluded.check_frequency END",
+            (url, info["playlist_id"], info["title"], body.mode, show_id, frequency, ad_removal),
         )
         source = conn.execute(
             "SELECT * FROM sources WHERE playlist_id = ? AND mode = ?", (info["playlist_id"], body.mode)
@@ -221,8 +229,9 @@ def list_sources():
 @api.patch("/sources/{source_id}")
 def update_source(source_id: int, body: SourceUpdate):
     with db.connect() as conn:
-        if body.subscribed is not None:
-            conn.execute("UPDATE sources SET subscribed = ? WHERE id = ?", (int(body.subscribed), source_id))
+        if body.check_frequency:
+            frequency = _checked_frequency(body.check_frequency)
+            conn.execute("UPDATE sources SET check_frequency = ? WHERE id = ?", (frequency, source_id))
         if body.ad_removal:
             level = _checked_ad_level(body.ad_removal, "off")
             conn.execute("UPDATE sources SET ad_removal = ? WHERE id = ?", (level, source_id))
