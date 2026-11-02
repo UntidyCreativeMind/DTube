@@ -6,5 +6,8 @@ services:
     ports:
       - "3434:3434"
     volumes:
-      - ./config:/config
+      - dtube-config:/config
       - /your/media/folder:/media # the only line you edit
+
+volumes:
+  dtube-config:
