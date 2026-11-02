@@ -71,6 +71,14 @@ CREATE TABLE IF NOT EXISTS videos (
 -- Private or removed videos, so scheduled checks don't keep queueing them.
 CREATE TABLE IF NOT EXISTS unavailable (video_id TEXT PRIMARY KEY);
 
+-- Videos taken out of the history, so scheduled checks don't download them again.
+CREATE TABLE IF NOT EXISTS removed (
+    video_id TEXT NOT NULL,
+    show_id INTEGER NOT NULL,
+    source_id INTEGER,
+    PRIMARY KEY (video_id, show_id)
+);
+
 -- show_id 0 means the movie library.
 CREATE TABLE IF NOT EXISTS placements (
     id INTEGER PRIMARY KEY,

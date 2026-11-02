@@ -119,6 +119,24 @@ def allocate(video, mode: str, show_id: int, ext: str, settings: dict, options: 
         return dict(get_placement(conn, video["video_id"], show_id)) | {"old_path": None}
 
 
+def is_downloading(conn, placement) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM jobs WHERE video_id = ? AND show_id = ? AND status IN ('downloading', 'processing')",
+        (placement["video_id"], placement["show_id"]),
+    ).fetchone() is not None
+
+
+def remove_placement(conn, placement):
+    """Take a video out of the history. Its episode number stays used, so nothing shifts."""
+    video_id, show_id = placement["video_id"], placement["show_id"]
+    conn.execute(
+        "INSERT OR REPLACE INTO removed (video_id, show_id, source_id) VALUES (?, ?, ?)",
+        (video_id, show_id, placement["source_id"]),
+    )
+    conn.execute("DELETE FROM jobs WHERE video_id = ? AND show_id = ? AND status = 'queued'", (video_id, show_id))
+    conn.execute("DELETE FROM placements WHERE id = ?", (placement["id"],))
+
+
 def forget_source(conn, source) -> int:
     """Clear what DTube remembers about a playlist, so tracking it again starts fresh.
 
@@ -133,6 +151,7 @@ def forget_source(conn, source) -> int:
         "DELETE FROM placements WHERE source_id = ? OR (show_id != 0 AND show_id = ?)", (source_id, show_id)
     ).rowcount
     conn.execute("DELETE FROM jobs WHERE source_id = ? OR (show_id != 0 AND show_id = ?)", (source_id, show_id))
+    conn.execute("DELETE FROM removed WHERE source_id = ? OR (show_id != 0 AND show_id = ?)", (source_id, show_id))
     conn.execute("DELETE FROM seasons WHERE show_id = ?", (show_id,))
     conn.execute("DELETE FROM shows WHERE id = ?", (show_id,))
     return forgotten

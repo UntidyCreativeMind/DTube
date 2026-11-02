@@ -1,4 +1,4 @@
-import { Download, ScanSearch } from "lucide-react";
+import { Download, ScanSearch, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { AD_LEVELS, api, DEFAULT_OPTIONS, DownloadOptions, HistoryItem, QUALITIES } from "../api";
 import OptionsFields from "../components/OptionsFields";
@@ -9,19 +9,48 @@ export default function HistoryPage() {
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
   const [data, setData] = useState<{ total: number; items: HistoryItem[] } | null>(null);
+  const [missingOnly, setMissingOnly] = useState(false);
   const [message, setMessage] = useState("");
   const [redoing, setRedoing] = useState<number | null>(null);
   const [redoOptions, setRedoOptions] = useState<DownloadOptions>(DEFAULT_OPTIONS);
 
   const load = useCallback(() => {
-    const params = new URLSearchParams({ q: query, page: String(page), size: String(PAGE_SIZE) });
+    const params = new URLSearchParams({ q: query, page: String(page), size: String(PAGE_SIZE), missing: String(missingOnly) });
     return api(`/history?${params}`).then(setData).catch((e) => setMessage(e.message));
-  }, [query, page]);
+  }, [query, page, missingOnly]);
 
   useEffect(() => {
     const timer = setTimeout(load, 200);
     return () => clearTimeout(timer);
   }, [load]);
+
+  // Files can vanish at any time, so opening the page checks for them.
+  useEffect(() => {
+    api("/history/scan", "POST").then(({ changed }) => { if (changed) load(); }).catch(() => {});
+  }, []);
+
+  const removeOne = async (item: HistoryItem) => {
+    if (!confirm(`Remove "${item.title}" from DTube? Scheduled checks won't download it again, but Check now will.`)) return;
+    try {
+      await api(`/history/${item.id}`, "DELETE");
+      setMessage(`Removed "${item.title}".`);
+      load();
+    } catch (err) {
+      setMessage((err as Error).message);
+    }
+  };
+
+  const removeAllMissing = async () => {
+    if (!confirm("Remove every video with a missing file from DTube? Scheduled checks won't download them again, but Check now will.")) return;
+    try {
+      const { removed } = await api("/history/remove-missing", "POST");
+      setMessage(`Removed ${removed} ${removed === 1 ? "video" : "videos"}.`);
+      setPage(1);
+      load();
+    } catch (err) {
+      setMessage((err as Error).message);
+    }
+  };
 
   const startRedownload = (item: HistoryItem) => {
     setRedoOptions(item.options);
@@ -58,6 +87,15 @@ export default function HistoryPage() {
       </div>
       <input className="field" placeholder="Search titles and shows" value={query}
         onChange={(e) => { setQuery(e.target.value); setPage(1); }} />
+      <div className="flex min-h-9 flex-wrap items-center justify-between gap-2">
+        <label className="flex items-center gap-2 text-sm text-muted">
+          <input type="checkbox" checked={missingOnly} onChange={(e) => { setMissingOnly(e.target.checked); setPage(1); }} />
+          Missing files only
+        </label>
+        {missingOnly && !!data?.total && (
+          <button className="btn" onClick={removeAllMissing}><Trash2 size={15} /> Remove all missing</button>
+        )}
+      </div>
       {message && <p className="text-sm text-muted">{message}</p>}
       {data && data.items.length > 0 && (
         <ul className="divide-y divide-line rounded-2xl border border-line bg-panel">
@@ -79,6 +117,11 @@ export default function HistoryPage() {
                 aria-expanded={redoing === item.id} onClick={() => startRedownload(item)}>
                 <Download size={17} />
               </button>
+              {!!item.missing && (
+                <button className="p-1 text-muted hover:text-white" title="Remove from DTube" aria-label="Remove from DTube" onClick={() => removeOne(item)}>
+                  <Trash2 size={17} />
+                </button>
+              )}
               {redoing === item.id && (
                 <div className="w-full space-y-3 border-t border-line pt-3">
                   <OptionsFields value={redoOptions} onChange={(changes) => setRedoOptions({ ...redoOptions, ...changes })}
@@ -95,7 +138,7 @@ export default function HistoryPage() {
       )}
       {data && data.items.length === 0 && (
         <p className="rounded-2xl border border-dashed border-line px-4 py-10 text-center text-sm text-muted">
-          {query ? "No matches." : "Downloaded videos will appear here."}
+          {query || missingOnly ? "No matches." : "Downloaded videos will appear here."}
         </p>
       )}
       {pages > 1 && (

@@ -27,18 +27,19 @@ _plex_pending = {}
 
 
 def enqueue(conn, video_id, title, mode, show_id=0, source_id=None, force=False, options=None,
-            skip_cancelled=False) -> bool:
+            scheduled=False) -> bool:
     if not force:
         if library.get_placement(conn, video_id, show_id):
             return False
         if conn.execute("SELECT 1 FROM unavailable WHERE video_id = ?", (video_id,)).fetchone():
             return False
-    if skip_cancelled:
-        cancelled = conn.execute(
-            "SELECT 1 FROM jobs WHERE video_id = ? AND show_id = ? AND status = 'cancelled'",
-            (video_id, show_id),
+    if scheduled:
+        turned_down = conn.execute(
+            "SELECT 1 FROM jobs WHERE video_id = ? AND show_id = ? AND status = 'cancelled' "
+            "UNION SELECT 1 FROM removed WHERE video_id = ? AND show_id = ?",
+            (video_id, show_id, video_id, show_id),
         ).fetchone()
-        if cancelled:
+        if turned_down:
             return False
     active = conn.execute(
         f"SELECT 1 FROM jobs WHERE video_id = ? AND show_id = ? AND status IN {ACTIVE}",
@@ -58,15 +59,15 @@ def enqueue(conn, video_id, title, mode, show_id=0, source_id=None, force=False,
 def refresh_source(source_id: int, scheduled: bool = False) -> int:
     """Queue any videos in a playlist that haven't been downloaded.
 
-    A scheduled check leaves cancelled videos alone. Checking by hand brings them back.
+    A scheduled check leaves cancelled and removed videos alone. Checking by hand brings them back.
     """
     with db.connect() as conn:
         source = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
     info = ytdlp.probe(source["url"])
-    return queue_entries(source, info["entries"], skip_cancelled=scheduled)
+    return queue_entries(source, info["entries"], scheduled=scheduled)
 
 
-def queue_entries(source, entries, skip_cancelled=False) -> int:
+def queue_entries(source, entries, scheduled=False) -> int:
     added = 0
     options = opts.parse(source["options"])
     if source["episode_order"] == "reverse":
@@ -75,7 +76,7 @@ def queue_entries(source, entries, skip_cancelled=False) -> int:
         for entry in entries:
             added += enqueue(
                 conn, entry["video_id"], entry["title"], source["mode"], source["show_id"], source["id"],
-                options=options, skip_cancelled=skip_cancelled,
+                options=options, scheduled=scheduled,
             )
         conn.execute("UPDATE sources SET last_checked = ? WHERE id = ?", (time.time(), source["id"]))
     return added
@@ -227,6 +228,7 @@ def _run(job):
         _update(job["id"], status="done", progress=100)
         with db.connect() as conn:
             conn.execute("DELETE FROM unavailable WHERE video_id = ?", (job["video_id"],))
+            conn.execute("DELETE FROM removed WHERE video_id = ? AND show_id = ?", (job["video_id"], job["show_id"]))
         _queue_plex(placement, settings)
     except Exception as exc:
         if _cancel_requested:

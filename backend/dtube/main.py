@@ -345,12 +345,14 @@ def clear_finished():
 
 
 @api.get("/history")
-def history(q: str = "", page: int = 1, size: int = 50):
+def history(q: str = "", page: int = 1, size: int = 50, missing: bool = False):
     size = min(max(size, 1), 200)
     pattern = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
     where = "FROM placements p LEFT JOIN videos v ON v.video_id = p.video_id " \
             "LEFT JOIN shows s ON s.id = p.show_id " \
-            "WHERE COALESCE(v.title, p.path) LIKE ? ESCAPE '\\' OR COALESCE(s.title, '') LIKE ? ESCAPE '\\'"
+            "WHERE (COALESCE(v.title, p.path) LIKE ? ESCAPE '\\' OR COALESCE(s.title, '') LIKE ? ESCAPE '\\')"
+    if missing:
+        where += " AND p.missing = 1"
     with db.connect() as conn:
         total = conn.execute(f"SELECT COUNT(*) {where}", (pattern, pattern)).fetchone()[0]
         rows = conn.execute(
@@ -365,6 +367,33 @@ def history(q: str = "", page: int = 1, size: int = 50):
 @api.post("/history/scan")
 def scan_history():
     return {"changed": worker.scan_library()}
+
+
+@api.post("/history/remove-missing")
+def remove_missing():
+    worker.scan_library()
+    removed = 0
+    with db.transaction() as conn:
+        for row in conn.execute("SELECT * FROM placements WHERE missing = 1").fetchall():
+            if not library.is_downloading(conn, row):
+                library.remove_placement(conn, row)
+                removed += 1
+    return {"removed": removed}
+
+
+@api.delete("/history/{placement_id}")
+def remove_from_history(placement_id: int):
+    """Removes an entry whose file has gone. A file still on disk is refused, so nothing is lost track of."""
+    with db.transaction() as conn:
+        row = conn.execute("SELECT * FROM placements WHERE id = ?", (placement_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Not in history")
+        if os.path.isfile(row["path"]):
+            raise HTTPException(409, "That file is still on disk")
+        if library.is_downloading(conn, row):
+            raise HTTPException(409, "That video is downloading. Cancel it first.")
+        library.remove_placement(conn, row)
+    return {"ok": True}
 
 
 @api.post("/history/{placement_id}/redownload")

@@ -120,7 +120,8 @@ The homepage shows library statistics, refreshed every 30 seconds. Total size co
 - History is keyed by video ID, so a video is never downloaded twice unless asked.
 - A video that appears in a second playlist gets a hardlink, with a copy as the fallback.
 - Re-download is an explicit action.
-- A scan marks videos whose files were removed outside DTube.
+- A scan marks videos whose files were removed outside DTube. It runs when History opens.
+- A video with a missing file can be re-downloaded or removed from DTube. Removing is refused while the file exists. Scheduled checks then leave it alone, and Check now brings it back. Its episode number isn't reused.
 
 ## Plex
 

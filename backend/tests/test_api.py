@@ -884,6 +884,90 @@ def test_download_saves_the_video_length(admin, monkeypatch):
     assert admin.get("/api/stats").json()["runtime"]["seconds"] == 321
 
 
+def history_id(admin, video_id):
+    items = admin.get("/api/history").json()["items"]
+    return next(item["id"] for item in items if item["video_id"] == video_id)
+
+
+def test_history_can_show_missing_files_only(admin, tmp_path):
+    present = tmp_path / "here.mp4"
+    present.write_bytes(b"x")
+    add_history("a", "movie", present)
+    add_history("b", "tv", tmp_path / "gone.mp4", show_id=1)
+    admin.post("/api/history/scan")
+    assert admin.get("/api/history").json()["total"] == 2
+    body = admin.get("/api/history", params={"missing": True}).json()
+    assert [item["video_id"] for item in body["items"]] == ["b"]
+    assert admin.get("/api/history", params={"missing": True, "q": "nomatch"}).json()["total"] == 0
+
+
+def test_removing_a_missing_file_from_history(admin, tmp_path):
+    add_history("a", "movie", tmp_path / "gone.mp4")
+    assert admin.delete(f"/api/history/{history_id(admin, 'a')}").json() == {"ok": True}
+    assert admin.get("/api/history").json()["total"] == 0
+    assert admin.delete("/api/history/999").status_code == 404
+
+
+def test_removing_is_refused_while_the_file_exists(admin, tmp_path):
+    path = tmp_path / "here.mp4"
+    path.write_bytes(b"x")
+    add_history("a", "movie", path)
+    assert admin.delete(f"/api/history/{history_id(admin, 'a')}").status_code == 409
+    assert path.exists()
+    assert admin.get("/api/history").json()["total"] == 1
+
+
+def test_removing_is_refused_while_downloading(admin, tmp_path):
+    add_history("a", "movie", tmp_path / "gone.mp4")
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO jobs (video_id, title, mode, status, created_at, updated_at) "
+            "VALUES ('a', 'A', 'movie', 'downloading', 0, 0)"
+        )
+    assert admin.delete(f"/api/history/{history_id(admin, 'a')}").status_code == 409
+    assert admin.post("/api/history/remove-missing").json()["removed"] == 0
+
+
+def test_remove_all_missing_keeps_files_on_disk(admin, tmp_path):
+    present = tmp_path / "here.mp4"
+    present.write_bytes(b"x")
+    add_history("a", "movie", present)
+    add_history("b", "tv", tmp_path / "gone1.mp4", show_id=1)
+    add_history("c", "audio", tmp_path / "gone2.m4a", show_id=2)
+    assert admin.post("/api/history/remove-missing").json()["removed"] == 2
+    assert [item["video_id"] for item in admin.get("/api/history").json()["items"]] == ["a"]
+
+
+def test_removed_video_stays_away_from_scheduled_checks_only(admin, monkeypatch):
+    use_media_folders()
+    source_id = download_playlist(admin, monkeypatch, "tv")
+    with db.connect() as conn:
+        path = conn.execute("SELECT path FROM placements WHERE video_id = 'a'").fetchone()[0]
+    Path(path).unlink()
+    admin.delete(f"/api/history/{history_id(admin, 'a')}")
+
+    assert worker.refresh_source(source_id, scheduled=True) == 0
+    assert worker.refresh_source(source_id) == 1
+    worker._run(worker._next_job())
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM removed").fetchone()[0] == 0
+    episodes = {item["video_id"]: item["episode"] for item in admin.get("/api/history").json()["items"]}
+    assert episodes == {"a": 3, "b": 2}
+
+
+def test_forgetting_a_playlist_clears_its_removed_videos(admin, monkeypatch):
+    clear_media()
+    use_media_folders()
+    source_id = download_playlist(admin, monkeypatch, "tv")
+    clear_media()
+    admin.post("/api/history/remove-missing")
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM removed").fetchone()[0] == 2
+    admin.delete(f"/api/sources/{source_id}", params={"forget": True})
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM removed").fetchone()[0] == 0
+
+
 def test_scheduled_checks_leave_cancelled_videos_alone(admin, monkeypatch):
     probe_as(monkeypatch, PLAYLIST)
     admin.post("/api/sources", json={"url": PLAYLIST_URL, "mode": "tv"})
