@@ -1,6 +1,7 @@
 import { Download, ScanSearch } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { AD_LEVELS, AdLevel, api, HistoryItem, QUALITIES, Quality } from "../api";
+import { AD_LEVELS, api, DEFAULT_OPTIONS, DownloadOptions, HistoryItem, QUALITIES } from "../api";
+import OptionsFields from "../components/OptionsFields";
 
 const PAGE_SIZE = 50;
 
@@ -10,8 +11,7 @@ export default function HistoryPage() {
   const [data, setData] = useState<{ total: number; items: HistoryItem[] } | null>(null);
   const [message, setMessage] = useState("");
   const [redoing, setRedoing] = useState<number | null>(null);
-  const [redoLevel, setRedoLevel] = useState<AdLevel>("off");
-  const [redoQuality, setRedoQuality] = useState<Quality>("1080");
+  const [redoOptions, setRedoOptions] = useState<DownloadOptions>(DEFAULT_OPTIONS);
 
   const load = useCallback(() => {
     const params = new URLSearchParams({ q: query, page: String(page), size: String(PAGE_SIZE) });
@@ -24,18 +24,14 @@ export default function HistoryPage() {
   }, [load]);
 
   const startRedownload = (item: HistoryItem) => {
-    setRedoLevel(item.ad_removal);
-    setRedoQuality(item.quality);
+    setRedoOptions(item.options);
     setRedoing(redoing === item.id ? null : item.id);
   };
 
   const redownload = async (item: HistoryItem) => {
     setRedoing(null);
     try {
-      const { queued } = await api(`/history/${item.id}/redownload`, "POST", {
-        ad_removal: redoLevel,
-        quality: redoQuality,
-      });
+      const { queued } = await api(`/history/${item.id}/redownload`, "POST", { options: redoOptions });
       setMessage(queued ? `Queued "${item.title}".` : `"${item.title}" is already in the queue.`);
     } catch (err) {
       setMessage((err as Error).message);
@@ -70,12 +66,12 @@ export default function HistoryPage() {
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium">{item.title}</p>
                 <p className="truncate text-xs text-muted">
-                  {item.mode === "tv"
-                    ? `${item.show} · S${String(item.season).padStart(2, "0")}E${String(item.episode).padStart(2, "0")}`
-                    : "Movie"}
+                  {item.mode === "tv" && `${item.show} · S${String(item.season).padStart(2, "0")}E${String(item.episode).padStart(2, "0")}`}
+                  {item.mode === "audio" && `${item.show} · Track ${item.episode}`}
+                  {item.mode === "movie" && "Movie"}
                   {item.channel ? ` · ${item.channel}` : ""}
-                  {` · ${QUALITIES.find((q) => q.id === item.quality)?.label}`}
-                  {item.ad_removal !== "off" ? ` · Ads: ${AD_LEVELS.find((l) => l.id === item.ad_removal)?.label}` : ""}
+                  {item.mode !== "audio" ? ` · ${QUALITIES.find((q) => q.id === item.options.quality)?.label}` : ""}
+                  {item.options.ad_removal !== "off" ? ` · Ads: ${AD_LEVELS.find((l) => l.id === item.options.ad_removal)?.label}` : ""}
                   {item.missing ? <span className="text-accent-strong"> · File missing</span> : null}
                 </p>
               </div>
@@ -84,21 +80,13 @@ export default function HistoryPage() {
                 <Download size={17} />
               </button>
               {redoing === item.id && (
-                <div className="flex w-full flex-wrap items-center gap-2 text-sm text-muted">
-                  <label className="flex items-center gap-2">
-                    Quality
-                    <select className="field !w-auto !py-1" value={redoQuality} onChange={(e) => setRedoQuality(e.target.value as Quality)}>
-                      {QUALITIES.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
-                    </select>
-                  </label>
-                  <label className="flex items-center gap-2">
-                    Ad removal
-                    <select className="field !w-auto !py-1" value={redoLevel} onChange={(e) => setRedoLevel(e.target.value as AdLevel)}>
-                      {AD_LEVELS.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
-                    </select>
-                  </label>
-                  <button className="btn btn-primary" onClick={() => redownload(item)}>Replace the file</button>
-                  <button className="btn" onClick={() => setRedoing(null)}>Cancel</button>
+                <div className="w-full space-y-3 border-t border-line pt-3">
+                  <OptionsFields value={redoOptions} onChange={(changes) => setRedoOptions({ ...redoOptions, ...changes })}
+                    audioOnly={item.mode === "audio"} />
+                  <div className="flex gap-2">
+                    <button className="btn btn-primary" onClick={() => redownload(item)}>Replace the file</button>
+                    <button className="btn" onClick={() => setRedoing(null)}>Cancel</button>
+                  </div>
                 </div>
               )}
             </li>

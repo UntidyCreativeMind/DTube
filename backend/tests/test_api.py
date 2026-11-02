@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from dtube import auth, db, main, worker, ytdlp
+from dtube import auth, db, main, options, worker, ytdlp
 
 PLAYLIST = {
     "type": "playlist", "playlist_id": "PL1", "title": "My Playlist", "channel": "C",
@@ -13,6 +13,7 @@ PLAYLIST = {
 }
 VIDEO = {"type": "video", "video_id": "v", "title": "Solo", "channel": "C", "thumbnail": "", "count": 1, "entries": []}
 PASSWORD = "correct-horse-battery"
+PLAYLIST_URL = "https://www.youtube.com/playlist?list=PL1"
 
 
 @pytest.fixture
@@ -29,6 +30,28 @@ def admin(client):
     return client
 
 
+class Stop(Exception):
+    pass
+
+
+@pytest.fixture
+def captured_args(monkeypatch):
+    captured = {}
+
+    def fake_popen(args, **kwargs):
+        captured["args"] = args
+        raise Stop
+
+    monkeypatch.setattr(ytdlp.subprocess, "Popen", fake_popen)
+    return captured
+
+
+def args_for(captured, tmp_path, audio_only=False, **changes):
+    with pytest.raises(Stop):
+        ytdlp.download("a", tmp_path, {**options.DEFAULTS, **changes}, audio_only, None, None)
+    return captured["args"]
+
+
 def probe_as(monkeypatch, info):
     monkeypatch.setattr(ytdlp, "probe", lambda url: dict(info))
 
@@ -36,6 +59,19 @@ def probe_as(monkeypatch, info):
 def job_rows():
     with db.connect() as conn:
         return conn.execute("SELECT * FROM jobs ORDER BY id").fetchall()
+
+
+def job_options(index=0):
+    return options.parse(job_rows()[index]["options"])
+
+
+def use_media_folders():
+    media = db.MEDIA_ROOT
+    for name in ("temp", "tv", "movies", "music"):
+        (media / name).mkdir(exist_ok=True)
+    db.set_settings({"temp_dir": str(media / "temp"), "tv_dir": str(media / "tv"),
+                     "movie_dir": str(media / "movies"), "music_dir": str(media / "music"), "min_free_gb": 0})
+    return media
 
 
 def test_api_requires_login(client):
@@ -77,34 +113,78 @@ def test_playlist_url_detection():
     assert not ytdlp.is_playlist_url("https://www.youtube.com/watch?v=a&list=RDa")
 
 
-def test_single_video_is_always_a_movie(admin, monkeypatch):
+def test_single_video_is_a_movie_unless_audio(admin, monkeypatch):
     probe_as(monkeypatch, VIDEO)
     url = "https://youtu.be/v"
     assert admin.post("/api/sources", json={"url": url, "mode": "tv"}).json()["added"] == 1
     assert job_rows()[0]["mode"] == "movie"
+    assert job_rows()[0]["show_id"] == 0
+
+    assert admin.post("/api/sources", json={"url": url, "mode": "audio"}).json()["added"] == 1
+    assert job_rows()[1]["mode"] == "audio"
+    assert job_rows()[1]["show_id"] > 0
+
+
+def test_invalid_add_requests_are_rejected(admin, monkeypatch):
+    probe_as(monkeypatch, PLAYLIST)
+    for extra in ({"mode": "podcast"}, {"episode_order": "random"}, {"check_frequency": "weekly"},
+                  {"options": {"quality": "4k"}}, {"options": {"subtitles": "maybe"}}, {"options": {"nope": 1}}):
+        assert admin.post("/api/sources", json={"url": PLAYLIST_URL, **extra}).status_code == 400
 
 
 def test_playlist_in_tv_mode_creates_show_and_queues_in_order(admin, monkeypatch):
     probe_as(monkeypatch, PLAYLIST)
-    url = "https://www.youtube.com/playlist?list=PL1"
-    assert admin.post("/api/sources", json={"url": url, "mode": "tv"}).json()["added"] == 2
+    assert admin.post("/api/sources", json={"url": PLAYLIST_URL, "mode": "tv"}).json()["added"] == 2
     rows = job_rows()
     assert [r["video_id"] for r in rows] == ["a", "b"]
     assert all(r["mode"] == "tv" and r["show_id"] > 0 for r in rows)
 
 
+def test_reverse_order_queues_the_last_video_first(admin, monkeypatch):
+    probe_as(monkeypatch, PLAYLIST)
+    body = {"url": PLAYLIST_URL, "mode": "tv", "episode_order": "reverse"}
+    admin.post("/api/sources", json=body)
+    assert [r["video_id"] for r in job_rows()] == ["b", "a"]
+    assert admin.get("/api/sources").json()[0]["episode_order"] == "reverse"
+
+
+def test_new_videos_stay_in_order_after_a_reversed_import(admin, monkeypatch):
+    probe_as(monkeypatch, PLAYLIST)
+    admin.post("/api/sources", json={"url": PLAYLIST_URL, "mode": "tv", "episode_order": "reverse"})
+    source_id = admin.get("/api/sources").json()[0]["id"]
+    newest_first = [{"video_id": "d", "title": "D"}, {"video_id": "c", "title": "C"}, *PLAYLIST["entries"]]
+    probe_as(monkeypatch, {**PLAYLIST, "entries": newest_first})
+    admin.post(f"/api/sources/{source_id}/check")
+    assert [r["video_id"] for r in job_rows()] == ["b", "a", "c", "d"]
+
+
+def test_episode_order_can_be_changed_for_later_videos(admin, monkeypatch):
+    probe_as(monkeypatch, PLAYLIST)
+    admin.post("/api/sources", json={"url": PLAYLIST_URL, "mode": "tv"})
+    source_id = admin.get("/api/sources").json()[0]["id"]
+    admin.patch(f"/api/sources/{source_id}", json={"episode_order": "reverse"})
+    assert admin.get("/api/sources").json()[0]["episode_order"] == "reverse"
+    assert admin.patch(f"/api/sources/{source_id}", json={"episode_order": "x"}).status_code == 400
+
+
 def test_playlist_in_movie_mode_goes_to_movie_library(admin, monkeypatch):
     probe_as(monkeypatch, PLAYLIST)
-    url = "https://www.youtube.com/playlist?list=PL1"
-    admin.post("/api/sources", json={"url": url, "mode": "movie"})
+    admin.post("/api/sources", json={"url": PLAYLIST_URL, "mode": "movie"})
     assert all(r["mode"] == "movie" and r["show_id"] == 0 for r in job_rows())
+
+
+def test_one_playlist_can_be_tv_and_audio_at_once(admin, monkeypatch):
+    probe_as(monkeypatch, PLAYLIST)
+    admin.post("/api/sources", json={"url": PLAYLIST_URL, "mode": "tv"})
+    assert admin.post("/api/sources", json={"url": PLAYLIST_URL, "mode": "audio"}).json()["added"] == 2
+    assert len(admin.get("/api/sources").json()) == 2
+    assert {r["mode"] for r in job_rows()} == {"tv", "audio"}
 
 
 def test_adding_twice_does_not_duplicate_or_redownload(admin, monkeypatch):
     probe_as(monkeypatch, PLAYLIST)
-    url = "https://www.youtube.com/playlist?list=PL1"
-    admin.post("/api/sources", json={"url": url, "mode": "tv"})
-    assert admin.post("/api/sources", json={"url": url, "mode": "tv"}).json()["added"] == 0
+    admin.post("/api/sources", json={"url": PLAYLIST_URL, "mode": "tv"})
+    assert admin.post("/api/sources", json={"url": PLAYLIST_URL, "mode": "tv"}).json()["added"] == 0
     with db.connect() as conn:
         conn.execute("UPDATE jobs SET status = 'done'")
         for video_id in ("a", "b"):
@@ -112,7 +192,7 @@ def test_adding_twice_does_not_duplicate_or_redownload(admin, monkeypatch):
                 "INSERT INTO placements (video_id, mode, show_id, path, created_at) VALUES (?, 'tv', 1, 'x', 0)",
                 (video_id,),
             )
-    assert admin.post("/api/sources", json={"url": url, "mode": "tv"}).json()["added"] == 0
+    assert admin.post("/api/sources", json={"url": PLAYLIST_URL, "mode": "tv"}).json()["added"] == 0
 
 
 def test_redownload_is_explicit(admin):
@@ -121,190 +201,190 @@ def test_redownload_is_explicit(admin):
             "INSERT INTO placements (id, video_id, mode, show_id, path, created_at) VALUES (1, 'a', 'movie', 0, 'x', 0)"
         )
     assert admin.post("/api/history/1/redownload").json()["queued"] is True
-    row = job_rows()[0]
-    assert row["force"] == 1
+    assert job_rows()[0]["force"] == 1
 
 
-def test_ad_removal_defaults_to_the_setting(admin, monkeypatch):
+def test_options_default_to_settings_and_can_be_overridden(admin, monkeypatch):
     probe_as(monkeypatch, VIDEO)
-    admin.put("/api/settings", json={"default_ad_removal": "conservative"})
+    defaults = {"quality": "max", "ad_removal": "conservative", "subtitles": "auto", "audio_lang": "es"}
+    assert admin.put("/api/settings", json={"default_options": defaults}).status_code == 200
     admin.post("/api/sources", json={"url": "https://youtu.be/v"})
-    assert job_rows()[0]["ad_removal"] == "conservative"
+    assert job_options() == {**options.DEFAULTS, **defaults}
+    with db.connect() as conn:
+        conn.execute("DELETE FROM jobs")
+    admin.post("/api/sources", json={"url": "https://youtu.be/v", "options": {"quality": "480"}})
+    assert job_options()["quality"] == "480"
+    assert job_options()["ad_removal"] == "conservative"
 
 
-def test_ad_removal_rejects_unknown_levels(admin, monkeypatch):
-    probe_as(monkeypatch, VIDEO)
-    body = {"url": "https://youtu.be/v", "ad_removal": "extreme"}
-    assert admin.post("/api/sources", json=body).status_code == 400
-    assert admin.put("/api/settings", json={"default_ad_removal": "extreme"}).status_code == 400
-    assert admin.put("/api/settings", json={"default_ad_removal": ""}).status_code == 400
+def test_settings_reject_bad_default_options(admin):
+    assert admin.put("/api/settings", json={"default_options": {"quality": "4k"}}).status_code == 400
+    assert admin.put("/api/settings", json={"default_options": {"nope": 1}}).status_code == 400
 
 
-def test_playlist_level_applies_to_later_checks(admin, monkeypatch):
+def test_playlist_options_apply_to_later_checks(admin, monkeypatch):
     probe_as(monkeypatch, PLAYLIST)
-    url = "https://www.youtube.com/playlist?list=PL1"
-    admin.post("/api/sources", json={"url": url, "mode": "tv"})
+    admin.post("/api/sources", json={"url": PLAYLIST_URL, "mode": "tv", "options": {"quality": "720"}})
+    assert job_options()["quality"] == "720"
     source_id = admin.get("/api/sources").json()[0]["id"]
-    admin.patch(f"/api/sources/{source_id}", json={"ad_removal": "aggressive"})
+    admin.patch(f"/api/sources/{source_id}", json={"options": {"ad_removal": "aggressive", "subtitles": "manual"}})
     source = admin.get("/api/sources").json()[0]
-    assert source["ad_removal"] == "aggressive"
+    assert source["options"]["quality"] == "720"
+    assert source["options"]["ad_removal"] == "aggressive"
     assert source["check_frequency"] == "off"
-    admin.delete("/api/jobs/finished")
+    assert admin.patch(f"/api/sources/{source_id}", json={"options": {"quality": "8k"}}).status_code == 400
     with db.connect() as conn:
         conn.execute("UPDATE jobs SET status = 'cancelled'")
     admin.post(f"/api/sources/{source_id}/check")
-    assert [r["ad_removal"] for r in job_rows()][-2:] == ["aggressive", "aggressive"]
+    assert job_options(-1)["ad_removal"] == "aggressive"
+    assert job_options(-1)["subtitles"] == "manual"
 
 
-def test_redownload_keeps_or_changes_the_level(admin):
+def test_redownload_keeps_or_changes_options(admin):
+    stored = options.dump({**options.DEFAULTS, "quality": "720", "ad_removal": "conservative"})
     with db.connect() as conn:
         conn.execute(
-            "INSERT INTO placements (id, video_id, mode, show_id, path, created_at, ad_removal) "
-            "VALUES (1, 'a', 'movie', 0, 'x', 0, 'conservative')"
+            "INSERT INTO placements (id, video_id, mode, show_id, path, created_at, options) "
+            "VALUES (1, 'a', 'movie', 0, 'x', 0, ?)", (stored,),
         )
     admin.post("/api/history/1/redownload")
-    assert job_rows()[0]["ad_removal"] == "conservative"
+    assert job_options()["quality"] == "720"
     with db.connect() as conn:
         conn.execute("UPDATE jobs SET status = 'done'")
-    admin.post("/api/history/1/redownload", json={"ad_removal": "aggressive"})
-    assert job_rows()[1]["ad_removal"] == "aggressive"
+    admin.post("/api/history/1/redownload", json={"options": {"quality": "max"}})
+    assert job_options(1)["quality"] == "max"
+    assert job_options(1)["ad_removal"] == "conservative"
 
 
-def test_ad_levels_map_to_sponsorblock_categories(tmp_path, monkeypatch):
-    captured = {}
-
-    class Stop(Exception):
-        pass
-
-    def fake_popen(args, **kwargs):
-        captured["args"] = args
-        raise Stop
-
-    monkeypatch.setattr(ytdlp.subprocess, "Popen", fake_popen)
+def test_ad_levels_map_to_sponsorblock_categories(tmp_path, captured_args):
     for level, expected in (("conservative", "selfpromo,interaction"),
                             ("aggressive", "selfpromo,interaction,sponsor")):
-        with pytest.raises(Stop):
-            ytdlp.download("a", tmp_path, "1080", level, None, None)
-        args = captured["args"]
+        args = args_for(captured_args, tmp_path, ad_removal=level)
         assert args[args.index("--sponsorblock-remove") + 1] == expected
         assert args.index("--sponsorblock-remove") < args.index("--")
-    with pytest.raises(Stop):
-        ytdlp.download("a", tmp_path, "1080", "off", None, None)
-    assert "--sponsorblock-remove" not in captured["args"]
+    assert "--sponsorblock-remove" not in args_for(captured_args, tmp_path, ad_removal="off")
 
 
-def test_quality_maps_to_format_and_container(tmp_path, monkeypatch):
-    captured = {}
-
-    class Stop(Exception):
-        pass
-
-    def fake_popen(args, **kwargs):
-        captured["args"] = args
-        raise Stop
-
-    monkeypatch.setattr(ytdlp.subprocess, "Popen", fake_popen)
+def test_quality_maps_to_format_and_container(tmp_path, captured_args):
     for quality, selector_part, container in (("max", "bv*+ba", "mkv"), ("720", "[height<=720]", "mp4"),
                                               ("360", "[height<=360]", "mp4")):
-        with pytest.raises(Stop):
-            ytdlp.download("a", tmp_path, quality, "off", None, None)
-        args = captured["args"]
+        args = args_for(captured_args, tmp_path, quality=quality)
         assert selector_part in args[args.index("-f") + 1]
         assert args[args.index("--merge-output-format") + 1] == container
     assert "avc1" in ytdlp.format_selector("1080")
     assert "avc1" not in ytdlp.format_selector("max")
 
 
-def test_quality_is_set_per_download_with_a_default(admin, monkeypatch):
-    probe_as(monkeypatch, VIDEO)
-    admin.post("/api/sources", json={"url": "https://youtu.be/v", "quality": "480"})
-    assert job_rows()[0]["quality"] == "480"
-    with db.connect() as conn:
-        conn.execute("DELETE FROM jobs")
-    admin.put("/api/settings", json={"default_quality": "max"})
-    admin.post("/api/sources", json={"url": "https://youtu.be/v"})
-    assert job_rows()[0]["quality"] == "max"
-    assert admin.post("/api/sources", json={"url": "https://youtu.be/v", "quality": "4k"}).status_code == 400
+def test_audio_language_is_preferred_with_a_fallback():
+    assert "language" not in ytdlp.format_selector("1080")
+    assert "language" not in ytdlp.audio_selector()
+    for selector in (ytdlp.format_selector("1080", "es"), ytdlp.format_selector("max", "es"),
+                     ytdlp.audio_selector("es")):
+        first, *rest = selector.split("/")
+        assert "[language^=es]" in first
+        assert "bv*" not in first
+        assert "language" not in rest[-1]
 
 
-def test_playlist_quality_applies_to_later_checks(admin, monkeypatch):
-    probe_as(monkeypatch, PLAYLIST)
-    url = "https://www.youtube.com/playlist?list=PL1"
-    admin.post("/api/sources", json={"url": url, "mode": "tv", "quality": "720"})
-    assert all(r["quality"] == "720" for r in job_rows())
-    source_id = admin.get("/api/sources").json()[0]["id"]
-    admin.patch(f"/api/sources/{source_id}", json={"quality": "360"})
-    assert admin.patch(f"/api/sources/{source_id}", json={"quality": "8k"}).status_code == 400
-    with db.connect() as conn:
-        conn.execute("UPDATE jobs SET status = 'cancelled'")
-    admin.post(f"/api/sources/{source_id}/check")
-    assert [r["quality"] for r in job_rows()][-2:] == ["360", "360"]
+def test_chapters_are_embedded_when_chosen(tmp_path, captured_args):
+    assert "--embed-chapters" in args_for(captured_args, tmp_path)
+    assert "--embed-chapters" not in args_for(captured_args, tmp_path, chapters=False)
 
 
-def test_redownload_keeps_or_changes_the_quality(admin):
-    with db.connect() as conn:
-        conn.execute(
-            "INSERT INTO placements (id, video_id, mode, show_id, path, created_at, quality) "
-            "VALUES (1, 'a', 'movie', 0, 'x', 0, '720')"
-        )
-    admin.post("/api/history/1/redownload")
-    assert job_rows()[0]["quality"] == "720"
-    with db.connect() as conn:
-        conn.execute("UPDATE jobs SET status = 'done'")
-    admin.post("/api/history/1/redownload", json={"quality": "max"})
-    assert job_rows()[1]["quality"] == "max"
+def test_subtitle_arguments(tmp_path, captured_args):
+    off = args_for(captured_args, tmp_path)
+    assert "--write-subs" not in off and "--write-auto-subs" not in off
+
+    manual = args_for(captured_args, tmp_path, subtitles="manual", subtitle_lang="es")
+    assert "--write-subs" in manual and "--write-auto-subs" not in manual
+    assert manual[manual.index("--sub-langs") + 1] == "es(-.*)?"
+    assert manual[manual.index("--convert-subs") + 1] == "srt"
+
+    assert "--write-auto-subs" in args_for(captured_args, tmp_path, subtitles="auto")
+    assert "--ignore-errors" in args_for(captured_args, tmp_path, subtitles="auto")
+    assert "--ignore-errors" not in off
 
 
-def test_old_database_is_upgraded():
-    with db.connect() as conn:
-        conn.execute("DROP TABLE sources")
-        conn.execute("CREATE TABLE sources (id INTEGER PRIMARY KEY, title TEXT, subscribed INTEGER)")
-        conn.execute("INSERT INTO sources (title, subscribed) VALUES ('checked', 1), ('manual', 0)")
-    db.init()
-    db.init()
-    with db.connect() as conn:
-        rows = conn.execute("SELECT ad_removal, check_frequency FROM sources ORDER BY id").fetchall()
-    assert [tuple(r) for r in rows] == [("off", "daily"), ("off", "off")]
+class FakeProcess:
+    def __init__(self, lines, returncode=0):
+        self.stdout = lines
+        self.returncode = returncode
+
+    def wait(self):
+        return self.returncode
 
 
-def test_retired_settings_do_not_come_back():
-    db.set_settings({"check_hours": 6})
-    assert "check_hours" not in db.get_settings()
+def test_failed_subtitles_keep_the_video_and_warn(tmp_path, monkeypatch):
+    (tmp_path / "video.mp4").write_bytes(b"data")
+    (tmp_path / "video.info.json").write_text('{"id": "a"}')
+    lines = ["WARNING: Unable to download video subtitles for 'en': HTTP Error 429\n"]
+    monkeypatch.setattr(ytdlp.subprocess, "Popen", lambda *a, **k: FakeProcess(lines))
+    options_on = {**options.DEFAULTS, "subtitles": "auto"}
+    result = ytdlp.download("a", tmp_path, options_on, False, None, lambda p: None)
+    assert result["video"] == tmp_path / "video.mp4"
+    assert result["warning"] == ytdlp.SUBTITLES_FAILED
+    assert result["subtitles"] == {}
 
 
-def test_each_playlist_has_its_own_check_frequency(admin, monkeypatch):
-    probe_as(monkeypatch, PLAYLIST)
-    url = "https://www.youtube.com/playlist?list=PL1"
-    body = {"url": url, "mode": "tv", "check_frequency": "hourly"}
-    admin.post("/api/sources", json=body)
-    source = admin.get("/api/sources").json()[0]
-    assert source["check_frequency"] == "hourly"
-
-    admin.post("/api/sources", json={"url": url, "mode": "tv"})
-    assert admin.get("/api/sources").json()[0]["check_frequency"] == "hourly"
-
-    admin.patch(f"/api/sources/{source['id']}", json={"check_frequency": "daily"})
-    assert admin.get("/api/sources").json()[0]["check_frequency"] == "daily"
-    response = admin.patch(f"/api/sources/{source['id']}", json={"check_frequency": "weekly"})
-    assert response.status_code == 400
-    assert admin.post("/api/sources", json={**body, "check_frequency": "weekly"}).status_code == 400
+def test_no_warning_when_another_subtitle_variant_worked(tmp_path, monkeypatch):
+    (tmp_path / "video.mp4").write_bytes(b"data")
+    (tmp_path / "video.info.json").write_text('{"id": "a"}')
+    (tmp_path / "video.en.srt").write_text("subs")
+    lines = ["WARNING: Unable to download video subtitles for 'en-orig': HTTP Error 429\n"]
+    monkeypatch.setattr(ytdlp.subprocess, "Popen", lambda *a, **k: FakeProcess(lines))
+    options_on = {**options.DEFAULTS, "subtitles": "auto"}
+    result = ytdlp.download("a", tmp_path, options_on, False, None, lambda p: None)
+    assert result["warning"] is None
+    assert list(result["subtitles"]) == ["en"]
 
 
-def test_due_sources_follow_each_frequency():
-    now = 1_000_000
-    rows = [
-        ("off", now - 999_999), ("immediate", now - 299), ("immediate", now - 300),
-        ("hourly", now - 3599), ("hourly", now - 3600),
-        ("daily", now - 86399), ("daily", now - 86400), ("daily", None),
-    ]
-    with db.connect() as conn:
-        for index, (frequency, checked) in enumerate(rows, 1):
-            conn.execute(
-                "INSERT INTO sources (id, url, playlist_id, title, mode, check_frequency, last_checked) "
-                "VALUES (?, 'u', ?, 't', 'tv', ?, ?)",
-                (index, f"PL{index}", frequency, checked),
-            )
-    assert worker.due_sources(now) == [3, 5, 7, 8]
+def test_a_failed_video_with_subtitles_on_still_fails(tmp_path, monkeypatch):
+    lines = ["ERROR: [youtube] a: Video unavailable\n"]
+    monkeypatch.setattr(ytdlp.subprocess, "Popen", lambda *a, **k: FakeProcess(lines, 1))
+    with pytest.raises(ytdlp.YtdlpError):
+        ytdlp.download("a", tmp_path, {**options.DEFAULTS, "subtitles": "auto"}, False, None, lambda p: None)
+
+
+def test_no_video_file_is_an_error_even_with_a_clean_exit(tmp_path, monkeypatch):
+    monkeypatch.setattr(ytdlp.subprocess, "Popen", lambda *a, **k: FakeProcess([]))
+    with pytest.raises(ytdlp.YtdlpError):
+        ytdlp.download("a", tmp_path, {**options.DEFAULTS, "subtitles": "auto"}, False, None, lambda p: None)
+
+
+def test_subtitle_warning_shows_on_a_finished_job(admin, monkeypatch):
+    use_media_folders()
+    fake = fake_download_factory()
+
+    def warned(*args):
+        return {**fake(*args), "warning": ytdlp.SUBTITLES_FAILED}
+
+    monkeypatch.setattr(ytdlp, "download", warned)
+    with db.transaction() as conn:
+        worker.enqueue(conn, "w", "W", "movie")
+    worker._run(worker._next_job())
+    job = admin.get("/api/queue").json()["jobs"][0]
+    assert job["status"] == "done"
+    assert job["error"] == ytdlp.SUBTITLES_FAILED
+
+
+def test_audio_only_arguments(tmp_path, captured_args):
+    args = args_for(captured_args, tmp_path, audio_only=True, subtitles="auto", ad_removal="aggressive")
+    assert args[args.index("--audio-format") + 1] == "m4a"
+    assert "-x" in args and "--sponsorblock-remove" in args
+    for flag in ("--write-subs", "--embed-chapters", "--merge-output-format"):
+        assert flag not in args
+
+
+def test_picks_the_closest_subtitle(tmp_path):
+    for name in ("video.en-orig.srt", "video.en.srt", "video.en-GB.srt"):
+        (tmp_path / name).write_text("x")
+    assert ytdlp._pick_subtitle(tmp_path, "en") == {"en": tmp_path / "video.en.srt"}
+    (tmp_path / "video.en.srt").unlink()
+    assert ytdlp._pick_subtitle(tmp_path, "en") == {"en": tmp_path / "video.en-GB.srt"}
+    assert ytdlp._pick_subtitle(tmp_path, "fr") != {}
+    for path in tmp_path.iterdir():
+        path.unlink()
+    assert ytdlp._pick_subtitle(tmp_path, "en") == {}
 
 
 def test_settings_hide_the_plex_token(admin):
@@ -318,6 +398,7 @@ def test_settings_hide_the_plex_token(admin):
 
 def test_settings_reject_folders_outside_media(admin):
     assert admin.put("/api/settings", json={"temp_dir": str(db.CONFIG_DIR)}).status_code == 400
+    assert admin.put("/api/settings", json={"music_dir": str(db.CONFIG_DIR)}).status_code == 400
     assert admin.get("/api/fs", params={"path": str(db.MEDIA_ROOT.parent)}).status_code == 400
 
 
@@ -325,8 +406,6 @@ def test_settings_reject_bad_values(admin):
     assert admin.put("/api/settings", json={"unknown": 1}).status_code == 400
     assert admin.put("/api/settings", json={"check_hours": 6}).status_code == 400
     assert admin.put("/api/settings", json={"min_free_gb": -1}).status_code == 400
-    assert admin.put("/api/settings", json={"default_quality": "best"}).status_code == 400
-    assert admin.put("/api/settings", json={"default_quality": ""}).status_code == 400
 
 
 def test_mkdir_rejects_paths(admin):
@@ -344,42 +423,105 @@ def test_cookie_validation(admin):
     assert admin.delete("/api/cookies").json()["present"] is False
 
 
-def test_download_pipeline_files_a_tv_episode(admin, monkeypatch, tmp_path):
-    media = db.MEDIA_ROOT
-    for name in ("temp", "tv", "movies"):
-        (media / name).mkdir(exist_ok=True)
-    db.set_settings({"temp_dir": str(media / "temp"), "tv_dir": str(media / "tv"),
-                     "movie_dir": str(media / "movies"), "min_free_gb": 0})
-    probe_as(monkeypatch, PLAYLIST)
-
-    def fake_download(video_id, folder, quality, ad_removal, on_progress, on_start):
-        assert ad_removal == "aggressive"
+def fake_download_factory(calls=None):
+    def fake_download(video_id, folder, chosen, audio_only, on_progress, on_start):
+        if calls is not None:
+            calls.append((video_id, chosen, audio_only))
         on_progress(50, 1000, 5)
-        video = folder / "video.mp4"
-        video.write_bytes(b"data")
+        media = folder / ("video.m4a" if audio_only else "video.mp4")
+        media.write_bytes(b"data")
+        subtitle = folder / "video.en.srt"
+        subtitle.write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n")
+        thumb = folder / "video.jpg"
+        thumb.write_bytes(b"jpg")
         info = {"id": video_id, "title": video_id.upper(), "channel_id": "UC1", "channel": "Chan",
                 "upload_date": "20240131", "description": "d"}
-        return {"info": info, "video": video, "thumbnail": None}
+        return {"info": info, "video": media, "thumbnail": thumb,
+                "subtitles": {} if audio_only or chosen["subtitles"] == "off" else {"en": subtitle}}
 
-    monkeypatch.setattr(ytdlp, "download", fake_download)
-    admin.post("/api/sources", json={"url": "https://www.youtube.com/playlist?list=PL1", "mode": "tv",
-                                     "ad_removal": "aggressive"})
+    return fake_download
+
+
+def test_download_pipeline_files_a_tv_episode(admin, monkeypatch):
+    media = use_media_folders()
+    probe_as(monkeypatch, PLAYLIST)
+    calls = []
+    monkeypatch.setattr(ytdlp, "download", fake_download_factory(calls))
+    admin.post("/api/sources", json={"url": PLAYLIST_URL, "mode": "tv",
+                                     "options": {"ad_removal": "aggressive", "subtitles": "auto"}})
     for _ in range(2):
         worker._run(worker._next_job())
 
+    assert calls[0][1]["ad_removal"] == "aggressive"
+    assert calls[0][2] is False
     assert [r["status"] for r in job_rows()] == ["done", "done"]
     season = media / "tv" / "My Playlist" / "Season 01"
     assert (season / "My Playlist - S01E01 - A.mp4").exists()
     assert (season / "My Playlist - S01E02 - B.mp4").exists()
     assert (season / "My Playlist - S01E02 - B.nfo").exists()
+    assert (season / "My Playlist - S01E02 - B.en.srt").exists()
     assert (media / "tv" / "My Playlist" / "tvshow.nfo").exists()
     assert list((media / "temp").iterdir()) == []
-    assert admin.get("/api/history").json()["total"] == 2
+    history = admin.get("/api/history").json()
+    assert history["total"] == 2
+    assert history["items"][0]["options"]["ad_removal"] == "aggressive"
     assert worker._next_job() is None
 
 
+def test_audio_tracks_are_filed_in_the_music_folder(admin, monkeypatch):
+    media = use_media_folders()
+    probe_as(monkeypatch, PLAYLIST)
+    calls = []
+    written = []
+    monkeypatch.setattr(ytdlp, "download", fake_download_factory(calls))
+    monkeypatch.setattr(main.library.tags, "write_audio_tags", lambda *args: written.append(args))
+    admin.post("/api/sources", json={"url": PLAYLIST_URL, "mode": "audio", "episode_order": "reverse"})
+    for _ in range(2):
+        worker._run(worker._next_job())
+
+    assert all(call[2] is True for call in calls)
+    album = media / "music" / "My Playlist"
+    assert (album / "01 - B.m4a").exists()
+    assert (album / "02 - A.m4a").exists()
+    assert (album / "cover.jpg").exists()
+    assert not list(album.glob("*.nfo"))
+    assert [args[2:5] for args in written] == [("My Playlist", "C", 1), ("My Playlist", "C", 2)]
+    assert [r["status"] for r in job_rows()] == ["done", "done"]
+
+
+def test_a_second_album_gets_its_own_copy_not_a_hardlink(admin, monkeypatch):
+    media = use_media_folders()
+    probe_as(monkeypatch, {**PLAYLIST, "entries": PLAYLIST["entries"][:1]})
+    calls = []
+    monkeypatch.setattr(ytdlp, "download", fake_download_factory(calls))
+    monkeypatch.setattr(main.library.tags, "write_audio_tags", lambda *args: None)
+    admin.post("/api/sources", json={"url": PLAYLIST_URL, "mode": "audio"})
+    worker._run(worker._next_job())
+    probe_as(monkeypatch, {**PLAYLIST, "playlist_id": "PL2", "title": "Other", "entries": PLAYLIST["entries"][:1]})
+    admin.post("/api/sources", json={"url": "https://www.youtube.com/playlist?list=PL2", "mode": "audio"})
+    worker._run(worker._next_job())
+
+    assert len(calls) == 1
+    assert (media / "music" / "My Playlist" / "01 - A.m4a").read_bytes() == b"data"
+    assert (media / "music" / "Other" / "01 - A.m4a").read_bytes() == b"data"
+
+
+def test_paused_only_when_the_next_job_needs_a_missing_folder(monkeypatch):
+    settings = db.get_settings()
+    job = {"mode": "audio"}
+    assert worker._pause_reason(settings, None) == ""
+    assert "Choose your folders" in worker._pause_reason(settings, job)
+    media = use_media_folders()
+    settings = db.get_settings()
+    assert worker._pause_reason(settings, job) == ""
+    settings["music_dir"] = ""
+    assert "Choose your folders" in worker._pause_reason(settings, job)
+    assert worker._pause_reason(settings, {"mode": "tv"}) == ""
+    assert media.exists()
+
+
 def test_failed_download_retries_then_fails(admin, monkeypatch):
-    db.set_settings({"temp_dir": str(db.MEDIA_ROOT), "tv_dir": str(db.MEDIA_ROOT), "movie_dir": str(db.MEDIA_ROOT)})
+    use_media_folders()
 
     def broken(*args):
         raise ytdlp.YtdlpError("network")
@@ -395,7 +537,7 @@ def test_failed_download_retries_then_fails(admin, monkeypatch):
 
 
 def test_unavailable_video_fails_without_retry(admin, monkeypatch):
-    db.set_settings({"temp_dir": str(db.MEDIA_ROOT), "tv_dir": str(db.MEDIA_ROOT), "movie_dir": str(db.MEDIA_ROOT)})
+    use_media_folders()
 
     def gone(*args):
         raise ytdlp.YtdlpError("Private video", permanent=True)
@@ -473,3 +615,81 @@ def test_progress_parsing_handles_missing_values():
     assert ytdlp._parse_progress(("50", "100", "NA", "10", "3")) == (50.0, 10.0, 3)
     assert ytdlp._parse_progress(("NA", "NA", "NA", "NA", "NA")) == (0, None, None)
     assert ytdlp.PROGRESS.match("DTUBE|1|2|NA|4|5")
+
+
+def old_schema(conn, mode_check=False):
+    check = " CHECK (mode IN ('tv', 'movie'))" if mode_check else ""
+    conn.execute("DROP TABLE sources")
+    conn.execute(
+        f"CREATE TABLE sources (id INTEGER PRIMARY KEY, url TEXT NOT NULL, playlist_id TEXT NOT NULL, "
+        f"title TEXT NOT NULL, mode TEXT NOT NULL{check}, show_id INTEGER NOT NULL DEFAULT 0, "
+        f"subscribed INTEGER NOT NULL DEFAULT 0, last_checked REAL, ad_removal TEXT NOT NULL DEFAULT 'off', "
+        f"quality TEXT NOT NULL DEFAULT '1080', UNIQUE (playlist_id, mode))"
+    )
+    conn.execute(
+        "INSERT INTO sources (url, playlist_id, title, mode, subscribed, ad_removal, quality) "
+        "VALUES ('u', 'PL1', 'Checked', 'tv', 1, 'aggressive', '720'), ('u', 'PL2', 'Manual', 'movie', 0, 'off', 'max')"
+    )
+
+
+@pytest.mark.parametrize("mode_check", [False, True])
+def test_old_database_is_upgraded(mode_check):
+    with db.connect() as conn:
+        old_schema(conn, mode_check)
+    db.init()
+    db.init()
+    with db.connect() as conn:
+        rows = conn.execute("SELECT * FROM sources ORDER BY id").fetchall()
+        conn.execute("INSERT INTO sources (url, playlist_id, title, mode) VALUES ('u', 'PL3', 'A', 'audio')")
+    assert [r["check_frequency"] for r in rows] == ["daily", "off"]
+    assert [r["episode_order"] for r in rows] == ["playlist", "playlist"]
+    first, second = (options.parse(r["options"]) for r in rows)
+    assert (first["ad_removal"], first["quality"]) == ("aggressive", "720")
+    assert second["quality"] == "max"
+    assert first["subtitles"] == "off"
+
+
+def test_old_default_settings_are_carried_over():
+    db.set_settings({"default_quality": "max", "default_ad_removal": "conservative"})
+    db.init()
+    defaults = db.get_settings()["default_options"]
+    assert (defaults["quality"], defaults["ad_removal"]) == ("max", "conservative")
+    assert defaults["chapters"] is True
+
+
+def test_retired_settings_do_not_come_back():
+    db.set_settings({"check_hours": 6})
+    assert "check_hours" not in db.get_settings()
+
+
+def test_each_playlist_has_its_own_check_frequency(admin, monkeypatch):
+    probe_as(monkeypatch, PLAYLIST)
+    body = {"url": PLAYLIST_URL, "mode": "tv", "check_frequency": "hourly"}
+    admin.post("/api/sources", json=body)
+    source = admin.get("/api/sources").json()[0]
+    assert source["check_frequency"] == "hourly"
+
+    admin.post("/api/sources", json={"url": PLAYLIST_URL, "mode": "tv"})
+    assert admin.get("/api/sources").json()[0]["check_frequency"] == "hourly"
+
+    admin.patch(f"/api/sources/{source['id']}", json={"check_frequency": "daily"})
+    assert admin.get("/api/sources").json()[0]["check_frequency"] == "daily"
+    response = admin.patch(f"/api/sources/{source['id']}", json={"check_frequency": "weekly"})
+    assert response.status_code == 400
+
+
+def test_due_sources_follow_each_frequency():
+    now = 1_000_000
+    rows = [
+        ("off", now - 999_999), ("immediate", now - 299), ("immediate", now - 300),
+        ("hourly", now - 3599), ("hourly", now - 3600),
+        ("daily", now - 86399), ("daily", now - 86400), ("daily", None),
+    ]
+    with db.connect() as conn:
+        for index, (frequency, checked) in enumerate(rows, 1):
+            conn.execute(
+                "INSERT INTO sources (id, url, playlist_id, title, mode, check_frequency, last_checked) "
+                "VALUES (?, 'u', ?, 't', 'tv', ?, ?)",
+                (index, f"PL{index}", frequency, checked),
+            )
+    assert worker.due_sources(now) == [3, 5, 7, 8]

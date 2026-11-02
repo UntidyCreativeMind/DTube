@@ -31,7 +31,62 @@ export const QUALITIES: { id: Quality; label: string }[] = [
   { id: "360", label: "360p" },
 ];
 
-export type CheckFrequency ="off" | "immediate" | "hourly" | "daily";
+export type SubtitleMode = "off" | "manual" | "auto";
+
+export const SUBTITLE_MODES: { id: SubtitleMode; label: string }[] = [
+  { id: "off", label: "Off" },
+  { id: "manual", label: "Creator-made only" },
+  { id: "auto", label: "Creator-made or auto-generated" },
+];
+
+const LANGUAGES = [
+  { id: "en", label: "English" },
+  { id: "es", label: "Spanish" },
+  { id: "fr", label: "French" },
+  { id: "de", label: "German" },
+  { id: "it", label: "Italian" },
+  { id: "pt", label: "Portuguese" },
+  { id: "ja", label: "Japanese" },
+  { id: "ko", label: "Korean" },
+  { id: "zh", label: "Chinese" },
+  { id: "hi", label: "Hindi" },
+  { id: "ar", label: "Arabic" },
+  { id: "ru", label: "Russian" },
+];
+
+export const SUBTITLE_LANGUAGES = LANGUAGES;
+export const AUDIO_LANGUAGES = [{ id: "original", label: "Original" }, ...LANGUAGES];
+
+export type DownloadOptions = {
+  quality: Quality;
+  ad_removal: AdLevel;
+  subtitles: SubtitleMode;
+  subtitle_lang: string;
+  audio_lang: string;
+  chapters: boolean;
+};
+
+export const DEFAULT_OPTIONS: DownloadOptions = {
+  quality: "1080",
+  ad_removal: "off",
+  subtitles: "off",
+  subtitle_lang: "en",
+  audio_lang: "original",
+  chapters: true,
+};
+
+export type EpisodeOrder = "playlist" | "reverse";
+
+export const EPISODE_ORDERS: { id: EpisodeOrder; label: string }[] = [
+  { id: "playlist", label: "Playlist order" },
+  { id: "reverse", label: "Reverse playlist order" },
+];
+
+export const EPISODE_ORDER_HINT = "Use reverse for playlists that list the newest video first. Numbers already given don't change.";
+
+export type Mode = "tv" | "movie" | "audio";
+
+export type CheckFrequency = "off" | "immediate" | "hourly" | "daily";
 
 export const CHECK_FREQUENCIES: { id: CheckFrequency; label: string }[] = [
   { id: "off", label: "Off" },
@@ -44,7 +99,7 @@ export type Job = {
   id: number;
   video_id: string;
   title: string;
-  mode: "tv" | "movie";
+  mode: Mode;
   status: "queued" | "downloading" | "processing" | "done" | "failed" | "cancelled";
   progress: number;
   speed: number | null;
@@ -67,10 +122,10 @@ export type Source = {
   id: number;
   title: string;
   url: string;
-  mode: "tv" | "movie";
+  mode: Mode;
   check_frequency: CheckFrequency;
-  ad_removal: AdLevel;
-  quality: Quality;
+  episode_order: EpisodeOrder;
+  options: DownloadOptions;
   last_checked: number | null;
   done: number;
 };
@@ -78,14 +133,13 @@ export type Source = {
 export type HistoryItem = {
   id: number;
   video_id: string;
-  mode: "tv" | "movie";
+  mode: Mode;
   season: number | null;
   episode: number | null;
   path: string;
   missing: number;
   created_at: number;
-  ad_removal: AdLevel;
-  quality: Quality;
+  options: DownloadOptions;
   title: string;
   channel: string | null;
   show: string | null;
@@ -95,18 +149,19 @@ export type Settings = {
   temp_dir: string;
   tv_dir: string;
   movie_dir: string;
+  music_dir: string;
   plex_url: string;
   plex_token_set: boolean;
   plex_tv_section: string;
   plex_movie_section: string;
+  plex_music_section: string;
   plex_path_from: string;
   plex_path_to: string;
   file_uid: number;
   file_gid: number;
-  default_quality: Quality;
   min_free_gb: number;
   ytdlp_auto_update: boolean;
-  default_ad_removal: AdLevel;
+  default_options: DownloadOptions;
 };
 
 export type PlexLibrary = { id: string; title: string; type: string; agent: string };

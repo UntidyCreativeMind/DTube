@@ -1,6 +1,7 @@
 import { ChevronUp, Folder, FolderPlus, X } from "lucide-react";
 import { ChangeEvent, ReactNode, useEffect, useState } from "react";
-import { AD_LEVELS, AdLevel, api, PlexLibrary, QUALITIES, Quality, Settings } from "../api";
+import { api, PlexLibrary, Settings } from "../api";
+import OptionsFields from "../components/OptionsFields";
 
 function Section({ title, hint, children }: { title: string; hint?: string; children: ReactNode }) {
   return (
@@ -82,6 +83,7 @@ const FOLDERS = [
   ["temp_dir", "Temporary downloads"],
   ["tv_dir", "TV shows library"],
   ["movie_dir", "Movies library"],
+  ["music_dir", "Audio library"],
 ] as const;
 
 export default function SettingsPage() {
@@ -176,6 +178,7 @@ export default function SettingsPage() {
 
   const showLibraries = libraries.filter((l) => l.type === "show");
   const movieLibraries = libraries.filter((l) => l.type === "movie");
+  const musicLibraries = libraries.filter((l) => l.type === "artist");
 
   return (
     <div className="space-y-4 pb-20">
@@ -225,6 +228,12 @@ export default function SettingsPage() {
               {movieLibraries.map((l) => <option key={l.id} value={l.id}>{l.title} ({l.agent})</option>)}
             </select>
           </Field>
+          <Field label="Music library (optional)">
+            <select className="field" value={form.plex_music_section} onChange={(e) => set("plex_music_section", e.target.value)}>
+              <option value="">Not set</option>
+              {musicLibraries.map((l) => <option key={l.id} value={l.id}>{l.title} ({l.agent})</option>)}
+            </select>
+          </Field>
           <Field label="DTube path prefix (optional)">
             <input className="field" placeholder="/media" value={form.plex_path_from} onChange={(e) => set("plex_path_from", e.target.value)} />
           </Field>
@@ -234,26 +243,16 @@ export default function SettingsPage() {
         </div>
       </Section>
 
-      <Section title="Downloads">
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Default quality">
-            <select className="field" value={form.default_quality} onChange={(e) => set("default_quality", e.target.value as Quality)}>
-              {QUALITIES.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
-            </select>
-          </Field>
-          <Field label="Keep free (GB)">
-            <input className="field" type="number" min={0} value={form.min_free_gb} onChange={number("min_free_gb")} />
-          </Field>
-        </div>
+      <Section title="Download defaults" hint="These are selected for you on each new download, and you can change them there.">
+        <OptionsFields value={form.default_options}
+          onChange={(changes) => set("default_options", { ...form.default_options, ...changes })} />
+        <Field label="Keep free (GB)">
+          <input className="field" type="number" min={0} value={form.min_free_gb} onChange={number("min_free_gb")} />
+        </Field>
         <p className="text-xs text-muted">
           Max available saves as MKV, usually in VP9 or AV1, and files can be several times larger. Some Plex clients will
           transcode these. The other levels prefer H.264 MP4 for direct play.
         </p>
-        <Field label="Default ad removal">
-          <select className="field" value={form.default_ad_removal} onChange={(e) => set("default_ad_removal", e.target.value as AdLevel)}>
-            {AD_LEVELS.map(({ id, label, hint }) => <option key={id} value={id}>{label}: {hint}</option>)}
-          </select>
-        </Field>
         <p className="text-xs text-muted">
           YouTube's own ad breaks are never in downloads. These levels cut segments creators build into the video, using
           the community-run SponsorBlock database, so very new videos may not have any segments marked yet.

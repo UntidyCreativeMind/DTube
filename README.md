@@ -4,10 +4,14 @@ Self-hosted YouTube downloader for Plex, built on [yt-dlp](https://github.com/yt
 
 Paste a URL, and DTube downloads the video and files it into Plex as a TV show or a movie. All configuration happens in the web UI.
 
-- **Playlists** download in TV mode or Movie mode, chosen each time.
-- **Single videos** always download as movies.
+- **Playlists** download as a TV show, movies or audio only, chosen each time.
+- **Single videos** download as a movie or audio only.
 - **Download history** stops videos downloading twice unless you ask.
 - **Quality** is chosen for each download: max available, 1080p, 720p, 480p or 360p.
+- **Subtitles** can be creator-made only or include auto-generated ones, in a language you choose.
+- **Audio language** can stay as the original or prefer a language, for videos with dubbed tracks.
+- **Chapters** from YouTube are embedded in the video file.
+- **Episode order** follows the playlist or reverses it, for playlists that list the newest video first.
 - **New video checks** are set per playlist: off, immediate (every 5 minutes), hourly or daily.
 - **Ad removal** cuts creator-inserted ads with [SponsorBlock](https://sponsor.ajay.app/), at a level you pick for each download.
 - **Cookies** are optional. DTube works without them.
@@ -53,20 +57,23 @@ Open `http://<host>:3434` and create your admin login straight away. Until you d
 
 Then go to **Settings**:
 
-1. Choose your temporary, TV and movie folders. These must be inside the folder you mounted.
+1. Choose your temporary, TV, movie and audio folders. These must be inside the folder you mounted. You only need the ones you'll use.
 2. Set the file owner to a user that can write to those folders and that Plex can read from.
-3. Connect Plex and pick your two libraries.
+3. Connect Plex and pick your libraries.
 
 ## Plex setup
 
-Create two new Plex libraries instead of reusing your existing ones. Otherwise Plex may match playlists to unrelated real shows.
+Create new Plex libraries instead of reusing your existing ones. Otherwise Plex may match playlists to unrelated real shows.
 
 | Library type | Agent (under Advanced) |
 |---|---|
 | TV Shows | Plex NFO Series |
 | Movies | Plex NFO Movie |
+| Music (only for audio) | Plex's music agent, using the tags in each file |
 
 The NFO agents need Plex Media Server 1.43.1 or newer. Libraries using them don't work with Plex's watch state and ratings sync.
+
+Audio is saved as M4A in `Playlist/01 - Title.m4a`, tagged with the playlist as the album and the channel as the artist. Single videos go in an album called `Singles`.
 
 ## Reverse proxy
 

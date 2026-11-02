@@ -19,7 +19,8 @@ UNAVAILABLE = re.compile(
     re.IGNORECASE,
 )
 HIDDEN_TITLES = {"[Private video]", "[Deleted video]"}
-QUALITIES = ("max", "1080", "720", "480", "360")
+MEDIA_EXTS = {".mp4", ".mkv", ".webm", ".m4a"}
+SUBTITLES_FAILED = "Saved without subtitles, because YouTube wouldn't provide them. Re-download from History to try again."
 AD_CATEGORIES = {
     "off": [],
     "conservative": ["selfpromo", "interaction"],
@@ -105,29 +106,63 @@ def probe(url: str) -> dict:
             "count": len(entries), "entries": entries}
 
 
-def format_selector(quality: str) -> str:
+def format_selector(quality: str, audio_lang: str = "original") -> str:
+    """Pick streams, falling back to the original audio if a language isn't available."""
+    lang = "" if audio_lang == "original" else f"[language^={audio_lang}]"
     if quality == "max":
-        return "bv*+ba/b"
+        preferred = f"bv+ba{lang}/" if lang else ""
+        return f"{preferred}bv*+ba/b"
     q = f"[height<={quality}]"
-    return f"bv*{q}[vcodec^=avc1]+ba[ext=m4a]/b{q}[vcodec^=avc1]/bv*{q}+ba/b{q}/b"
+    # Plain bv, because bv* can pick a format with its own audio and drop the chosen language.
+    preferred = f"bv{q}[vcodec^=avc1]+ba{lang}[ext=m4a]/bv{q}+ba{lang}/" if lang else ""
+    return f"{preferred}bv*{q}[vcodec^=avc1]+ba[ext=m4a]/b{q}[vcodec^=avc1]/bv*{q}+ba/b{q}/b"
 
 
-def download(video_id: str, folder: Path, quality: str, ad_removal: str, on_progress, on_start) -> dict:
-    """Download into `folder` and return the info, video path and thumbnail path."""
+def audio_selector(audio_lang: str = "original") -> str:
+    lang = "" if audio_lang == "original" else f"[language^={audio_lang}]"
+    preferred = f"ba{lang}[ext=m4a]/ba{lang}/" if lang else ""
+    return f"{preferred}ba[ext=m4a]/ba/b"
+
+
+def _pick_subtitle(folder: Path, lang: str) -> dict:
+    """yt-dlp can fetch several variants of a language, so keep the closest match."""
+    files = sorted(
+        folder.glob("video.*.srt"),
+        key=lambda p: (p.name != f"video.{lang}.srt", len(p.name), p.name),
+    )
+    return {lang: files[0]} if files else {}
+
+
+def download(video_id: str, folder: Path, options: dict, audio_only: bool, on_progress, on_start) -> dict:
+    """Download into `folder` and return the info and the paths of what was fetched."""
     template = (
         "download:DTUBE|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|"
         "%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s"
     )
-    args = _base_args() + [
+    # Warnings stay on here, because they're how a failed subtitle download shows up.
+    args = [arg for arg in _base_args() if arg != "--no-warnings"] + [
         "--no-playlist", "--progress", "--newline", "--no-part", "--no-mtime",
         "--sleep-interval", "2", "--max-sleep-interval", "5",
-        # The best streams are usually VP9 or AV1 with Opus, which MKV holds reliably.
-        "-f", format_selector(quality), "--merge-output-format", "mkv" if quality == "max" else "mp4",
         "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg",
         "--progress-template", template, "-o", str(folder / "video.%(ext)s"),
     ]
-    if AD_CATEGORIES[ad_removal]:
-        args += ["--sponsorblock-remove", ",".join(AD_CATEGORIES[ad_removal])]
+    if audio_only:
+        args += ["-f", audio_selector(options["audio_lang"]), "-x", "--audio-format", "m4a"]
+    else:
+        quality = options["quality"]
+        # The best streams are usually VP9 or AV1 with Opus, which MKV holds reliably.
+        args += ["-f", format_selector(quality, options["audio_lang"]),
+                 "--merge-output-format", "mkv" if quality == "max" else "mp4"]
+        if options["chapters"]:
+            args.append("--embed-chapters")
+        if options["subtitles"] != "off":
+            # Without --ignore-errors, a failed subtitle download would fail the whole video.
+            args += ["--write-subs", "--sub-langs", f"{options['subtitle_lang']}(-.*)?",
+                     "--convert-subs", "srt", "--sleep-subtitles", "2", "--ignore-errors"]
+            if options["subtitles"] == "auto":
+                args.append("--write-auto-subs")
+    if AD_CATEGORIES[options["ad_removal"]]:
+        args += ["--sponsorblock-remove", ",".join(AD_CATEGORIES[options["ad_removal"]])]
     args += ["--", f"https://www.youtube.com/watch?v={video_id}"]
     proc = subprocess.Popen(
         args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=_env(),
@@ -135,6 +170,7 @@ def download(video_id: str, folder: Path, quality: str, ad_removal: str, on_prog
     )
     on_start(proc)
     tail = []
+    subtitles_failed = False
     for line in proc.stdout:
         line = line.rstrip()
         match = PROGRESS.match(line)
@@ -142,16 +178,21 @@ def download(video_id: str, folder: Path, quality: str, ad_removal: str, on_prog
             on_progress(*_parse_progress(match.groups()))
         else:
             tail = (tail + [line])[-40:]
+            subtitles_failed = subtitles_failed or "Unable to download video subtitles" in line
     if proc.wait() != 0:
         output = "\n".join(tail)
         raise YtdlpError(_error_text(output), permanent=bool(UNAVAILABLE.search(output)))
 
-    info = json.loads((folder / "video.info.json").read_text(encoding="utf-8"))
-    videos = [p for p in folder.glob("video.*") if p.suffix not in (".json", ".jpg", ".webp", ".png")]
-    if not videos:
+    info_file = folder / "video.info.json"
+    videos = [p for p in folder.glob("video.*") if p.suffix in MEDIA_EXTS]
+    if not videos or not info_file.exists():
         raise YtdlpError("yt-dlp finished but no video file was found")
     thumb = folder / "video.jpg"
-    return {"info": info, "video": videos[0], "thumbnail": thumb if thumb.exists() else None}
+    subtitles = _pick_subtitle(folder, options["subtitle_lang"])
+    return {"info": json.loads(info_file.read_text(encoding="utf-8")), "video": videos[0],
+            "thumbnail": thumb if thumb.exists() else None, "subtitles": subtitles,
+            # One variant, such as en-orig, can fail while another worked.
+            "warning": SUBTITLES_FAILED if subtitles_failed and not subtitles else None}
 
 
 def _number(value):

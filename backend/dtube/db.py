@@ -4,6 +4,8 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
+from . import options
+
 CONFIG_DIR = Path(os.environ.get("DTUBE_CONFIG", "/config"))
 MEDIA_ROOT = Path(os.environ.get("DTUBE_MEDIA", "/media"))
 
@@ -27,7 +29,8 @@ CREATE TABLE IF NOT EXISTS shows (
     playlist_id TEXT NOT NULL UNIQUE,
     title TEXT NOT NULL,
     folder TEXT NOT NULL UNIQUE,
-    description TEXT NOT NULL DEFAULT ''
+    description TEXT NOT NULL DEFAULT '',
+    artist TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS seasons (
@@ -46,9 +49,11 @@ CREATE TABLE IF NOT EXISTS sources (
     url TEXT NOT NULL,
     playlist_id TEXT NOT NULL,
     title TEXT NOT NULL,
-    mode TEXT NOT NULL CHECK (mode IN ('tv', 'movie')),
+    mode TEXT NOT NULL,
     show_id INTEGER NOT NULL DEFAULT 0,
     check_frequency TEXT NOT NULL DEFAULT 'off',
+    episode_order TEXT NOT NULL DEFAULT 'playlist',
+    options TEXT NOT NULL DEFAULT '{}',
     last_checked REAL,
     UNIQUE (playlist_id, mode)
 );
@@ -75,6 +80,7 @@ CREATE TABLE IF NOT EXISTS placements (
     episode INTEGER,
     path TEXT NOT NULL,
     missing INTEGER NOT NULL DEFAULT 0,
+    options TEXT NOT NULL DEFAULT '{}',
     created_at REAL NOT NULL,
     UNIQUE (video_id, show_id)
 );
@@ -88,6 +94,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     source_id INTEGER,
     status TEXT NOT NULL DEFAULT 'queued',
     force INTEGER NOT NULL DEFAULT 0,
+    options TEXT NOT NULL DEFAULT '{}',
     progress REAL NOT NULL DEFAULT 0,
     speed REAL,
     eta INTEGER,
@@ -104,18 +111,19 @@ DEFAULTS = {
     "temp_dir": "",
     "tv_dir": "",
     "movie_dir": "",
+    "music_dir": "",
     "plex_url": "",
     "plex_token": "",
     "plex_tv_section": "",
     "plex_movie_section": "",
+    "plex_music_section": "",
     "plex_path_from": "",
     "plex_path_to": "",
     "file_uid": 1000,
     "file_gid": 1000,
-    "default_quality": "1080",
     "min_free_gb": 10,
     "ytdlp_auto_update": True,
-    "default_ad_removal": "off",
+    "default_options": options.DEFAULTS,
 }
 
 
@@ -143,22 +151,59 @@ def transaction():
         conn.execute("COMMIT")
 
 
+def _columns(conn, table: str) -> set:
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _migrate(conn):
+    """Bring a database from an earlier version up to the current schema."""
+    if "artist" not in _columns(conn, "shows"):
+        conn.execute("ALTER TABLE shows ADD COLUMN artist TEXT NOT NULL DEFAULT ''")
+
+    columns = _columns(conn, "sources")
+    if "check_frequency" not in columns:
+        conn.execute("ALTER TABLE sources ADD COLUMN check_frequency TEXT NOT NULL DEFAULT 'off'")
+        if "subscribed" in columns:
+            conn.execute("UPDATE sources SET check_frequency = 'daily' WHERE subscribed = 1")
+    if "episode_order" not in columns:
+        conn.execute("ALTER TABLE sources ADD COLUMN episode_order TEXT NOT NULL DEFAULT 'playlist'")
+
+    for table in ("sources", "jobs", "placements"):
+        columns = _columns(conn, table)
+        if "options" not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN options TEXT NOT NULL DEFAULT '{{}}'")
+            legacy = sorted({"ad_removal", "quality"} & columns)
+            if legacy:
+                pairs = ", ".join(f"'{column}', {column}" for column in legacy)
+                conn.execute(f"UPDATE {table} SET options = json_object({pairs})")
+
+    # Early versions limited sources.mode with a CHECK, which SQLite can't alter in place.
+    sql = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'sources'").fetchone()[0]
+    if "CHECK" in sql:
+        shared = "id, url, playlist_id, title, mode, show_id, check_frequency, episode_order, options, last_checked"
+        conn.execute("ALTER TABLE sources RENAME TO sources_old")
+        conn.executescript(SCHEMA)
+        conn.execute(f"INSERT INTO sources ({shared}) SELECT {shared} FROM sources_old")
+        conn.execute("DROP TABLE sources_old")
+
+    rows = conn.execute(
+        "SELECT key, value FROM settings WHERE key IN ('default_quality', 'default_ad_removal')"
+    ).fetchall()
+    if rows:
+        legacy = {row["key"].removeprefix("default_"): json.loads(row["value"]) for row in rows}
+        conn.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('default_options', ?)",
+            (json.dumps({**options.DEFAULTS, **legacy}),),
+        )
+        conn.execute("DELETE FROM settings WHERE key IN ('default_quality', 'default_ad_removal')")
+
+
 def init():
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     with connect() as conn:
         conn.execute("PRAGMA journal_mode = WAL")
         conn.executescript(SCHEMA)
-        for table in ("sources", "jobs", "placements"):
-            columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
-            if "ad_removal" not in columns:
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN ad_removal TEXT NOT NULL DEFAULT 'off'")
-            if "quality" not in columns:
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN quality TEXT NOT NULL DEFAULT '1080'")
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(sources)")}
-        if "check_frequency" not in columns:
-            conn.execute("ALTER TABLE sources ADD COLUMN check_frequency TEXT NOT NULL DEFAULT 'off'")
-            if "subscribed" in columns:
-                conn.execute("UPDATE sources SET check_frequency = 'daily' WHERE subscribed = 1")
+        _migrate(conn)
 
 
 def get_settings() -> dict:

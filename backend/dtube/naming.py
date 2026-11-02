@@ -20,6 +20,10 @@ def episode_base(show: str, season: int, episode: int, title: str) -> str:
     return f"{clean(show, 80)} - S{season:02d}E{episode:02d} - {clean(title)}"
 
 
+def track_base(track: int, title: str) -> str:
+    return f"{track:02d} - {clean(title)}"
+
+
 def season_folder(season: int) -> str:
     return f"Season {season:02d}"
 

@@ -10,12 +10,15 @@ import time
 from pathlib import Path
 
 from . import db, library, plex, ytdlp
+from . import options as opts
 
 log = logging.getLogger("dtube")
 RETRY_DELAYS = [60, 600]
 ACTIVE = ("queued", "downloading", "processing")
 # YouTube can't notify DTube about new videos, so "immediate" is a short polling interval.
 CHECK_INTERVALS = {"immediate": 300, "hourly": 3600, "daily": 86400}
+DESTINATIONS = {"tv": "tv_dir", "movie": "movie_dir", "audio": "music_dir"}
+PLEX_SECTIONS = {"tv": "plex_tv_section", "movie": "plex_movie_section", "audio": "plex_music_section"}
 
 state = {"paused": ""}
 _current_proc = None
@@ -23,8 +26,7 @@ _cancel_requested = False
 _plex_pending = {}
 
 
-def enqueue(conn, video_id, title, mode, show_id=0, source_id=None, force=False, ad_removal="off",
-            quality="1080") -> bool:
+def enqueue(conn, video_id, title, mode, show_id=0, source_id=None, force=False, options=None) -> bool:
     if not force:
         if library.get_placement(conn, video_id, show_id):
             return False
@@ -38,9 +40,9 @@ def enqueue(conn, video_id, title, mode, show_id=0, source_id=None, force=False,
         return False
     now = time.time()
     conn.execute(
-        "INSERT INTO jobs (video_id, title, mode, show_id, source_id, force, ad_removal, quality, "
-        "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (video_id, title, mode, show_id, source_id, int(force), ad_removal, quality, now, now),
+        "INSERT INTO jobs (video_id, title, mode, show_id, source_id, force, options, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (video_id, title, mode, show_id, source_id, int(force), opts.dump(options or opts.DEFAULTS), now, now),
     )
     return True
 
@@ -55,11 +57,14 @@ def refresh_source(source_id: int) -> int:
 
 def queue_entries(source, entries) -> int:
     added = 0
+    options = opts.parse(source["options"])
+    if source["episode_order"] == "reverse":
+        entries = list(reversed(entries))
     with db.transaction() as conn:
         for entry in entries:
             added += enqueue(
                 conn, entry["video_id"], entry["title"], source["mode"], source["show_id"], source["id"],
-                ad_removal=source["ad_removal"], quality=source["quality"],
+                options=options,
             )
         conn.execute("UPDATE sources SET last_checked = ? WHERE id = ?", (time.time(), source["id"]))
     return added
@@ -87,11 +92,14 @@ def _update(job_id: int, **fields):
         conn.execute(f"UPDATE jobs SET {columns} WHERE id = ?", (*fields.values(), job_id))
 
 
-def _pause_reason(settings: dict) -> str:
-    if not all(settings[k] for k in ("temp_dir", "tv_dir", "movie_dir")):
+def _pause_reason(settings: dict, job) -> str:
+    if not job:
+        return ""
+    destination = DESTINATIONS[job["mode"]]
+    if not settings["temp_dir"] or not settings[destination]:
         return "Choose your folders in Settings to start downloading."
     minimum = float(settings["min_free_gb"]) * 1024**3
-    for key in ("temp_dir", "tv_dir", "movie_dir"):
+    for key in ("temp_dir", destination):
         try:
             if shutil.disk_usage(settings[key]).free < minimum:
                 return f"Paused: less than {settings['min_free_gb']} GB free in {settings[key]}."
@@ -125,7 +133,7 @@ def _load_video(video_id: str):
 
 
 def _queue_plex(placement: dict, settings: dict):
-    section = settings["plex_tv_section" if placement["mode"] == "tv" else "plex_movie_section"]
+    section = settings[PLEX_SECTIONS[placement["mode"]]]
     if section and settings["plex_url"] and settings["plex_token"]:
         path = Path(placement["path"]).parent
         _plex_pending[(section, str(path))] = True
@@ -144,17 +152,21 @@ def _file_from_existing(job, settings) -> dict:
     """Reuse a copy already on disk, if this video was filed somewhere else."""
     if job["force"]:
         return {}
-    existing = library.find_existing_file(job["video_id"], job["show_id"], job["ad_removal"], job["quality"])
+    options = opts.parse(job["options"])
+    audio = job["mode"] == "audio"
+    existing = library.find_existing_file(job["video_id"], job["show_id"], audio, options)
     video = _load_video(job["video_id"])
     if not existing or not video:
         return {}
-    placement = library.allocate(
-        video, job["mode"], job["show_id"], existing.suffix, settings["tv_dir"], settings["movie_dir"],
-        job["ad_removal"], job["quality"],
-    )
-    library.install_video(existing, placement, link=True)
-    library.install_thumbnail(library.sidecar(existing, ".jpg"), placement, link=True)
-    library.write_metadata(video, placement, settings["tv_dir"])
+    placement = library.allocate(video, job["mode"], job["show_id"], existing.suffix, settings, options)
+    # Audio tags live in the file, so albums need their own copy rather than a hardlink.
+    library.install_video(existing, placement, "copy" if audio else "link")
+    if audio:
+        library.install_thumbnail(existing.parent / "cover.jpg", placement)
+    else:
+        library.install_thumbnail(library.sidecar(existing, ".jpg"), placement, "link")
+        library.install_subtitles(library.subtitle_files(existing), placement, "link")
+    library.write_metadata(video, placement, settings)
     return placement
 
 
@@ -171,19 +183,20 @@ def _download(job, settings) -> dict:
     def progress(percent, speed, eta):
         _update(job["id"], progress=round(percent, 1), speed=speed, eta=eta)
 
+    options = opts.parse(job["options"])
     try:
-        result = ytdlp.download(
-            job["video_id"], folder, job["quality"], job["ad_removal"], progress, started
-        )
+        result = ytdlp.download(job["video_id"], folder, options, job["mode"] == "audio", progress, started)
         _update(job["id"], status="processing", progress=100, speed=None, eta=None)
         video = _save_video(result["info"])
         placement = library.allocate(
-            video, job["mode"], job["show_id"], result["video"].suffix,
-            settings["tv_dir"], settings["movie_dir"], job["ad_removal"], job["quality"],
+            video, job["mode"], job["show_id"], result["video"].suffix, settings, options
         )
         library.install_video(result["video"], placement)
         library.install_thumbnail(result["thumbnail"], placement)
-        library.write_metadata(video, placement, settings["tv_dir"])
+        library.install_subtitles(result["subtitles"], placement)
+        library.write_metadata(video, placement, settings, result["thumbnail"])
+        if result.get("warning"):
+            _update(job["id"], error=result["warning"])
         return placement
     finally:
         _current_proc = None
@@ -232,9 +245,9 @@ def _worker_loop():
     while True:
         try:
             settings = db.get_settings()
-            state["paused"] = _pause_reason(settings)
-            job = None if state["paused"] else _next_job()
-            if job:
+            job = _next_job()
+            state["paused"] = _pause_reason(settings, job)
+            if job and not state["paused"]:
                 _run(job)
             else:
                 _flush_plex(settings)

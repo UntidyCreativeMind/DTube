@@ -1,8 +1,12 @@
-import { AlertTriangle, Clapperboard, Loader2, RotateCcw, Tv, X } from "lucide-react";
+import { AlertTriangle, Clapperboard, Loader2, Music, RotateCcw, Tv, X } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 import {
-  AD_LEVELS, AdLevel, api, CHECK_FREQUENCIES, CheckFrequency, Job, Preview, QUALITIES, Quality, Queue, Settings,
+  api, CHECK_FREQUENCIES, CheckFrequency, DEFAULT_OPTIONS, DownloadOptions, EPISODE_ORDER_HINT, EPISODE_ORDERS,
+  EpisodeOrder, Job, Mode, Preview, Queue, Settings,
 } from "../api";
+import OptionsFields from "../components/OptionsFields";
+
+const MODE_ICONS = { tv: Tv, movie: Clapperboard, audio: Music };
 
 function useQueue() {
   const [queue, setQueue] = useState<Queue>({ paused: "", jobs: [] });
@@ -58,13 +62,14 @@ const STATUS_LABEL: Record<Job["status"], string> = {
 function JobRow({ job }: { job: Job }) {
   const active = job.status === "queued" || job.status === "downloading" || job.status === "processing";
   const retryable = job.status === "failed" || job.status === "cancelled";
+  const ModeIcon = MODE_ICONS[job.mode];
   const detail = [job.status === "downloading" && `${job.progress.toFixed(0)}%`, formatSpeed(job.speed), formatEta(job.eta)]
     .filter(Boolean)
     .join(" · ");
 
   return (
     <li className="flex items-center gap-3 px-4 py-3">
-      {job.mode === "tv" ? <Tv size={18} className="shrink-0 text-muted" /> : <Clapperboard size={18} className="shrink-0 text-muted" />}
+      <ModeIcon size={18} className="shrink-0 text-muted" />
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium">{job.title}</p>
         <p className={`truncate text-xs ${job.status === "failed" ? "text-accent-strong" : "text-muted"}`}>
@@ -97,24 +102,18 @@ export default function DownloadsPage() {
   const queue = useQueue();
   const [url, setUrl] = useState("");
   const [preview, setPreview] = useState<Preview | null>(null);
-  const [mode, setMode] = useState<"tv" | "movie">("tv");
+  const [mode, setMode] = useState<Mode>("tv");
   const [checkFrequency, setCheckFrequency] = useState<CheckFrequency>("off");
-  const [defaultAds, setDefaultAds] = useState<AdLevel>("off");
-  const [adRemoval, setAdRemoval] = useState<AdLevel>("off");
-  const [defaultQuality, setDefaultQuality] = useState<Quality>("1080");
-  const [quality, setQuality] = useState<Quality>("1080");
+  const [episodeOrder, setEpisodeOrder] = useState<EpisodeOrder>("playlist");
+  const [defaults, setDefaults] = useState<DownloadOptions>(DEFAULT_OPTIONS);
+  const [options, setOptions] = useState<DownloadOptions>(DEFAULT_OPTIONS);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
   useEffect(() => {
     api<Settings>("/settings")
-      .then((s) => {
-        setDefaultAds(s.default_ad_removal);
-        setAdRemoval(s.default_ad_removal);
-        setDefaultQuality(s.default_quality);
-        setQuality(s.default_quality);
-      })
+      .then((s) => { setDefaults(s.default_options); setOptions(s.default_options); })
       .catch(() => {});
   }, []);
 
@@ -136,18 +135,26 @@ export default function DownloadsPage() {
     setBusy(true);
     setError("");
     try {
-      const result = await api("/sources", "POST", { url, mode, check_frequency: checkFrequency, ad_removal: adRemoval, quality });
+      const result = await api("/sources", "POST", {
+        url, mode: effectiveMode, check_frequency: checkFrequency, episode_order: episodeOrder, options,
+      });
       setMessage(result.added ? `Queued ${result.added} ${result.added === 1 ? "video" : "videos"}.` : "Nothing new to download.");
       setUrl("");
       setPreview(null);
       setCheckFrequency("off");
-      setAdRemoval(defaultAds);
-      setQuality(defaultQuality);
+      setEpisodeOrder("playlist");
+      setOptions(defaults);
     } catch (err) {
       setError((err as Error).message);
     }
     setBusy(false);
   };
+
+  const isPlaylist = preview?.type === "playlist";
+  const effectiveMode: Mode = !isPlaylist && mode === "tv" ? "movie" : mode;
+  const modeChoices = ([
+    ["tv", "TV show"], ["movie", "Movies"], ["audio", "Audio only"],
+  ] as const).filter(([id]) => isPlaylist || id !== "tv");
 
   const hasFinished = queue.jobs.some((j) => ["done", "failed", "cancelled"].includes(j.status));
 
@@ -179,45 +186,40 @@ export default function DownloadsPage() {
                     preview.downloaded > 0 && `${preview.downloaded} already downloaded`].filter(Boolean).join(" · ")}
                 </p>
               </div>
-              {preview.type === "playlist" ? (
-                <div className="flex flex-col gap-3">
-                  <div className="inline-flex w-fit rounded-lg border border-line p-0.5">
-                    {([["tv", "TV show", Tv], ["movie", "Movies", Clapperboard]] as const).map(([id, label, Icon]) => (
-                      <button key={id} type="button" onClick={() => setMode(id)}
-                        className={`flex items-center gap-2 rounded-md px-3 py-1.5 text-sm ${mode === id ? "bg-raised text-white" : "text-muted"}`}>
-                        <Icon size={15} /> {label}
-                      </button>
-                    ))}
-                  </div>
-                  <label className="flex flex-wrap items-center gap-2 text-sm text-muted">
-                    Check for new videos
-                    <select className="field !w-auto !py-1" value={checkFrequency}
+              <div className="inline-flex max-w-full flex-wrap rounded-lg border border-line p-0.5">
+                {modeChoices.map(([id, label]) => {
+                  const Icon = MODE_ICONS[id];
+                  return (
+                    <button key={id} type="button" onClick={() => setMode(id)} aria-pressed={effectiveMode === id}
+                      className={`flex items-center gap-2 rounded-md px-3 py-1.5 text-sm ${effectiveMode === id ? "bg-raised text-white" : "text-muted"}`}>
+                      <Icon size={15} /> {label}
+                    </button>
+                  );
+                })}
+              </div>
+              {isPlaylist && (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="block space-y-1 text-sm">
+                    <span className="text-muted">Check for new videos</span>
+                    <select className="field" value={checkFrequency}
                       onChange={(e) => setCheckFrequency(e.target.value as CheckFrequency)}>
                       {CHECK_FREQUENCIES.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
                     </select>
                   </label>
+                  {effectiveMode !== "movie" && (
+                    <label className="block space-y-1 text-sm">
+                      <span className="text-muted">{effectiveMode === "tv" ? "Episode order" : "Track order"}</span>
+                      <select className="field" value={episodeOrder}
+                        onChange={(e) => setEpisodeOrder(e.target.value as EpisodeOrder)}>
+                        {EPISODE_ORDERS.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
+                      </select>
+                      <span className="block text-xs text-muted">{EPISODE_ORDER_HINT}</span>
+                    </label>
+                  )}
                 </div>
-              ) : (
-                <p className="flex items-center gap-2 text-sm text-muted"><Clapperboard size={15} /> Single videos download as movies</p>
               )}
-              <label className="flex flex-wrap items-center gap-2 text-sm text-muted">
-                Quality
-                <select className="field !w-auto !py-1" value={quality} onChange={(e) => setQuality(e.target.value as Quality)}>
-                  {QUALITIES.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
-                </select>
-              </label>
-              <div className="space-y-1.5">
-                <p className="text-sm text-muted">Ad removal</p>
-                <div className="inline-flex max-w-full flex-wrap rounded-lg border border-line p-0.5">
-                  {AD_LEVELS.map(({ id, label }) => (
-                    <button key={id} type="button" onClick={() => setAdRemoval(id)} aria-pressed={adRemoval === id}
-                      className={`rounded-md px-3 py-1.5 text-sm ${adRemoval === id ? "bg-raised text-white" : "text-muted"}`}>
-                      {label}
-                    </button>
-                  ))}
-                </div>
-                <p className="text-xs text-muted">{AD_LEVELS.find((l) => l.id === adRemoval)!.hint}</p>
-              </div>
+              <OptionsFields value={options} onChange={(changes) => setOptions({ ...options, ...changes })}
+                audioOnly={effectiveMode === "audio"} />
               <button className="btn btn-primary" onClick={add} disabled={busy}>Download</button>
             </div>
           </div>
