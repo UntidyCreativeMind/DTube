@@ -1,6 +1,6 @@
 import { Download, ScanSearch } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { AD_LEVELS, AdLevel, api, HistoryItem } from "../api";
+import { AD_LEVELS, AdLevel, api, HistoryItem, QUALITIES, Quality } from "../api";
 
 const PAGE_SIZE = 50;
 
@@ -11,6 +11,7 @@ export default function HistoryPage() {
   const [message, setMessage] = useState("");
   const [redoing, setRedoing] = useState<number | null>(null);
   const [redoLevel, setRedoLevel] = useState<AdLevel>("off");
+  const [redoQuality, setRedoQuality] = useState<Quality>("1080");
 
   const load = useCallback(() => {
     const params = new URLSearchParams({ q: query, page: String(page), size: String(PAGE_SIZE) });
@@ -24,13 +25,17 @@ export default function HistoryPage() {
 
   const startRedownload = (item: HistoryItem) => {
     setRedoLevel(item.ad_removal);
+    setRedoQuality(item.quality);
     setRedoing(redoing === item.id ? null : item.id);
   };
 
   const redownload = async (item: HistoryItem) => {
     setRedoing(null);
     try {
-      const { queued } = await api(`/history/${item.id}/redownload`, "POST", { ad_removal: redoLevel });
+      const { queued } = await api(`/history/${item.id}/redownload`, "POST", {
+        ad_removal: redoLevel,
+        quality: redoQuality,
+      });
       setMessage(queued ? `Queued "${item.title}".` : `"${item.title}" is already in the queue.`);
     } catch (err) {
       setMessage((err as Error).message);
@@ -69,6 +74,7 @@ export default function HistoryPage() {
                     ? `${item.show} · S${String(item.season).padStart(2, "0")}E${String(item.episode).padStart(2, "0")}`
                     : "Movie"}
                   {item.channel ? ` · ${item.channel}` : ""}
+                  {` · ${QUALITIES.find((q) => q.id === item.quality)?.label}`}
                   {item.ad_removal !== "off" ? ` · Ads: ${AD_LEVELS.find((l) => l.id === item.ad_removal)?.label}` : ""}
                   {item.missing ? <span className="text-accent-strong"> · File missing</span> : null}
                 </p>
@@ -79,6 +85,12 @@ export default function HistoryPage() {
               </button>
               {redoing === item.id && (
                 <div className="flex w-full flex-wrap items-center gap-2 text-sm text-muted">
+                  <label className="flex items-center gap-2">
+                    Quality
+                    <select className="field !w-auto !py-1" value={redoQuality} onChange={(e) => setRedoQuality(e.target.value as Quality)}>
+                      {QUALITIES.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
+                    </select>
+                  </label>
                   <label className="flex items-center gap-2">
                     Ad removal
                     <select className="field !w-auto !py-1" value={redoLevel} onChange={(e) => setRedoLevel(e.target.value as AdLevel)}>

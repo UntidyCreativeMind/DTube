@@ -19,6 +19,7 @@ UNAVAILABLE = re.compile(
     re.IGNORECASE,
 )
 HIDDEN_TITLES = {"[Private video]", "[Deleted video]"}
+QUALITIES = ("max", "1080", "720", "480", "360")
 AD_CATEGORIES = {
     "off": [],
     "conservative": ["selfpromo", "interaction"],
@@ -104,12 +105,14 @@ def probe(url: str) -> dict:
             "count": len(entries), "entries": entries}
 
 
-def format_selector(quality: int) -> str:
+def format_selector(quality: str) -> str:
+    if quality == "max":
+        return "bv*+ba/b"
     q = f"[height<={quality}]"
     return f"bv*{q}[vcodec^=avc1]+ba[ext=m4a]/b{q}[vcodec^=avc1]/bv*{q}+ba/b{q}/b"
 
 
-def download(video_id: str, folder: Path, quality: int, ad_removal: str, on_progress, on_start) -> dict:
+def download(video_id: str, folder: Path, quality: str, ad_removal: str, on_progress, on_start) -> dict:
     """Download into `folder` and return the info, video path and thumbnail path."""
     template = (
         "download:DTUBE|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|"
@@ -118,7 +121,8 @@ def download(video_id: str, folder: Path, quality: int, ad_removal: str, on_prog
     args = _base_args() + [
         "--no-playlist", "--progress", "--newline", "--no-part", "--no-mtime",
         "--sleep-interval", "2", "--max-sleep-interval", "5",
-        "-f", format_selector(quality), "--merge-output-format", "mp4",
+        # The best streams are usually VP9 or AV1 with Opus, which MKV holds reliably.
+        "-f", format_selector(quality), "--merge-output-format", "mkv" if quality == "max" else "mp4",
         "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg",
         "--progress-template", template, "-o", str(folder / "video.%(ext)s"),
     ]

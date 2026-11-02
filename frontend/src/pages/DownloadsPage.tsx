@@ -1,6 +1,8 @@
 import { AlertTriangle, Clapperboard, Loader2, RotateCcw, Tv, X } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
-import { AD_LEVELS, AdLevel, api, CHECK_FREQUENCIES, CheckFrequency, Job, Preview, Queue, Settings } from "../api";
+import {
+  AD_LEVELS, AdLevel, api, CHECK_FREQUENCIES, CheckFrequency, Job, Preview, QUALITIES, Quality, Queue, Settings,
+} from "../api";
 
 function useQueue() {
   const [queue, setQueue] = useState<Queue>({ paused: "", jobs: [] });
@@ -99,13 +101,20 @@ export default function DownloadsPage() {
   const [checkFrequency, setCheckFrequency] = useState<CheckFrequency>("off");
   const [defaultAds, setDefaultAds] = useState<AdLevel>("off");
   const [adRemoval, setAdRemoval] = useState<AdLevel>("off");
+  const [defaultQuality, setDefaultQuality] = useState<Quality>("1080");
+  const [quality, setQuality] = useState<Quality>("1080");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
   useEffect(() => {
     api<Settings>("/settings")
-      .then((s) => { setDefaultAds(s.default_ad_removal); setAdRemoval(s.default_ad_removal); })
+      .then((s) => {
+        setDefaultAds(s.default_ad_removal);
+        setAdRemoval(s.default_ad_removal);
+        setDefaultQuality(s.default_quality);
+        setQuality(s.default_quality);
+      })
       .catch(() => {});
   }, []);
 
@@ -127,12 +136,13 @@ export default function DownloadsPage() {
     setBusy(true);
     setError("");
     try {
-      const result = await api("/sources", "POST", { url, mode, check_frequency: checkFrequency, ad_removal: adRemoval });
+      const result = await api("/sources", "POST", { url, mode, check_frequency: checkFrequency, ad_removal: adRemoval, quality });
       setMessage(result.added ? `Queued ${result.added} ${result.added === 1 ? "video" : "videos"}.` : "Nothing new to download.");
       setUrl("");
       setPreview(null);
       setCheckFrequency("off");
       setAdRemoval(defaultAds);
+      setQuality(defaultQuality);
     } catch (err) {
       setError((err as Error).message);
     }
@@ -190,6 +200,12 @@ export default function DownloadsPage() {
               ) : (
                 <p className="flex items-center gap-2 text-sm text-muted"><Clapperboard size={15} /> Single videos download as movies</p>
               )}
+              <label className="flex flex-wrap items-center gap-2 text-sm text-muted">
+                Quality
+                <select className="field !w-auto !py-1" value={quality} onChange={(e) => setQuality(e.target.value as Quality)}>
+                  {QUALITIES.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
+                </select>
+              </label>
               <div className="space-y-1.5">
                 <p className="text-sm text-muted">Ad removal</p>
                 <div className="inline-flex max-w-full flex-wrap rounded-lg border border-line p-0.5">

@@ -21,7 +21,17 @@ export const AD_LEVELS: { id: AdLevel; label: string; hint: string }[] = [
   { id: "aggressive", label: "Aggressive", hint: "Also cuts paid sponsor segments." },
 ];
 
-export type CheckFrequency = "off" | "immediate" | "hourly" | "daily";
+export type Quality = "max" | "1080" | "720" | "480" | "360";
+
+export const QUALITIES: { id: Quality; label: string }[] = [
+  { id: "max", label: "Max available" },
+  { id: "1080", label: "1080p" },
+  { id: "720", label: "720p" },
+  { id: "480", label: "480p" },
+  { id: "360", label: "360p" },
+];
+
+export type CheckFrequency ="off" | "immediate" | "hourly" | "daily";
 
 export const CHECK_FREQUENCIES: { id: CheckFrequency; label: string }[] = [
   { id: "off", label: "Off" },
@@ -60,6 +70,7 @@ export type Source = {
   mode: "tv" | "movie";
   check_frequency: CheckFrequency;
   ad_removal: AdLevel;
+  quality: Quality;
   last_checked: number | null;
   done: number;
 };
@@ -74,6 +85,7 @@ export type HistoryItem = {
   missing: number;
   created_at: number;
   ad_removal: AdLevel;
+  quality: Quality;
   title: string;
   channel: string | null;
   show: string | null;
@@ -91,7 +103,7 @@ export type Settings = {
   plex_path_to: string;
   file_uid: number;
   file_gid: number;
-  quality: number;
+  default_quality: Quality;
   min_free_gb: number;
   ytdlp_auto_update: boolean;
   default_ad_removal: AdLevel;

@@ -1,6 +1,6 @@
 import { ChevronUp, Folder, FolderPlus, X } from "lucide-react";
 import { ChangeEvent, ReactNode, useEffect, useState } from "react";
-import { AD_LEVELS, AdLevel, api, PlexLibrary, Settings } from "../api";
+import { AD_LEVELS, AdLevel, api, PlexLibrary, QUALITIES, Quality, Settings } from "../api";
 
 function Section({ title, hint, children }: { title: string; hint?: string; children: ReactNode }) {
   return (
@@ -236,16 +236,19 @@ export default function SettingsPage() {
 
       <Section title="Downloads">
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Maximum quality">
-            <select className="field" value={form.quality} onChange={number("quality") as never}>
-              {[480, 720, 1080, 1440, 2160].map((q) => <option key={q} value={q}>{q}p</option>)}
+          <Field label="Default quality">
+            <select className="field" value={form.default_quality} onChange={(e) => set("default_quality", e.target.value as Quality)}>
+              {QUALITIES.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
             </select>
           </Field>
           <Field label="Keep free (GB)">
             <input className="field" type="number" min={0} value={form.min_free_gb} onChange={number("min_free_gb")} />
           </Field>
         </div>
-        <p className="text-xs text-muted">Above 1080p, YouTube usually sends VP9 or AV1, which can make Plex transcode.</p>
+        <p className="text-xs text-muted">
+          Max available saves as MKV, usually in VP9 or AV1, and files can be several times larger. Some Plex clients will
+          transcode these. The other levels prefer H.264 MP4 for direct play.
+        </p>
         <Field label="Default ad removal">
           <select className="field" value={form.default_ad_removal} onChange={(e) => set("default_ad_removal", e.target.value as AdLevel)}>
             {AD_LEVELS.map(({ id, label, hint }) => <option key={id} value={id}>{label}: {hint}</option>)}

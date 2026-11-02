@@ -23,7 +23,8 @@ _cancel_requested = False
 _plex_pending = {}
 
 
-def enqueue(conn, video_id, title, mode, show_id=0, source_id=None, force=False, ad_removal="off") -> bool:
+def enqueue(conn, video_id, title, mode, show_id=0, source_id=None, force=False, ad_removal="off",
+            quality="1080") -> bool:
     if not force:
         if library.get_placement(conn, video_id, show_id):
             return False
@@ -37,9 +38,9 @@ def enqueue(conn, video_id, title, mode, show_id=0, source_id=None, force=False,
         return False
     now = time.time()
     conn.execute(
-        "INSERT INTO jobs (video_id, title, mode, show_id, source_id, force, ad_removal, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (video_id, title, mode, show_id, source_id, int(force), ad_removal, now, now),
+        "INSERT INTO jobs (video_id, title, mode, show_id, source_id, force, ad_removal, quality, "
+        "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (video_id, title, mode, show_id, source_id, int(force), ad_removal, quality, now, now),
     )
     return True
 
@@ -58,7 +59,7 @@ def queue_entries(source, entries) -> int:
         for entry in entries:
             added += enqueue(
                 conn, entry["video_id"], entry["title"], source["mode"], source["show_id"], source["id"],
-                ad_removal=source["ad_removal"],
+                ad_removal=source["ad_removal"], quality=source["quality"],
             )
         conn.execute("UPDATE sources SET last_checked = ? WHERE id = ?", (time.time(), source["id"]))
     return added
@@ -143,13 +144,13 @@ def _file_from_existing(job, settings) -> dict:
     """Reuse a copy already on disk, if this video was filed somewhere else."""
     if job["force"]:
         return {}
-    existing = library.find_existing_file(job["video_id"], job["show_id"], job["ad_removal"])
+    existing = library.find_existing_file(job["video_id"], job["show_id"], job["ad_removal"], job["quality"])
     video = _load_video(job["video_id"])
     if not existing or not video:
         return {}
     placement = library.allocate(
         video, job["mode"], job["show_id"], existing.suffix, settings["tv_dir"], settings["movie_dir"],
-        job["ad_removal"],
+        job["ad_removal"], job["quality"],
     )
     library.install_video(existing, placement, link=True)
     library.install_thumbnail(library.sidecar(existing, ".jpg"), placement, link=True)
@@ -172,13 +173,13 @@ def _download(job, settings) -> dict:
 
     try:
         result = ytdlp.download(
-            job["video_id"], folder, int(settings["quality"]), job["ad_removal"], progress, started
+            job["video_id"], folder, job["quality"], job["ad_removal"], progress, started
         )
         _update(job["id"], status="processing", progress=100, speed=None, eta=None)
         video = _save_video(result["info"])
         placement = library.allocate(
             video, job["mode"], job["show_id"], result["video"].suffix,
-            settings["tv_dir"], settings["movie_dir"], job["ad_removal"],
+            settings["tv_dir"], settings["movie_dir"], job["ad_removal"], job["quality"],
         )
         library.install_video(result["video"], placement)
         library.install_thumbnail(result["thumbnail"], placement)

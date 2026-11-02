@@ -7,6 +7,7 @@ Paste a URL, and DTube downloads the video and files it into Plex as a TV show o
 - **Playlists** download in TV mode or Movie mode, chosen each time.
 - **Single videos** always download as movies.
 - **Download history** stops videos downloading twice unless you ask.
+- **Quality** is chosen for each download: max available, 1080p, 720p, 480p or 360p.
 - **New video checks** are set per playlist: off, immediate (every 5 minutes), hourly or daily.
 - **Ad removal** cuts creator-inserted ads with [SponsorBlock](https://sponsor.ajay.app/), at a level you pick for each download.
 - **Cookies** are optional. DTube works without them.

@@ -89,7 +89,7 @@ Separate libraries with the Plex NFO Series and Plex NFO Movie agents avoid fals
 
 ## Settings held in the UI
 
-Temp, TV and movie folders, Plex connection and libraries, path mapping, file owner, cookies, video quality, default ad removal, disk space limit and yt-dlp updates.
+Temp, TV and movie folders, Plex connection and libraries, path mapping, file owner, cookies, default quality, default ad removal, disk space limit and yt-dlp updates.
 
 ## Image
 
@@ -97,7 +97,10 @@ GitHub Actions runs the tests, builds the image, starts it and checks it respond
 
 ## Defaults
 
-- 1080p H.264/AAC in MP4, for direct play on most Plex clients.
+- Quality is chosen per download, with a default in Settings. A playlist remembers its quality for later checks, and History can re-download at a different one.
+- 1080p and below prefer H.264/AAC in MP4, for direct play on most Plex clients.
+- Max available takes the best streams in MKV, because they are usually VP9 or AV1 with Opus.
+- Files are only hardlinked between shows when their quality matches.
 - Request throttling is on.
 - Downloads pause when free space falls below the limit.
 

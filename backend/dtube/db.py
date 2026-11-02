@@ -112,7 +112,7 @@ DEFAULTS = {
     "plex_path_to": "",
     "file_uid": 1000,
     "file_gid": 1000,
-    "quality": 1080,
+    "default_quality": "1080",
     "min_free_gb": 10,
     "ytdlp_auto_update": True,
     "default_ad_removal": "off",
@@ -152,6 +152,8 @@ def init():
             columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
             if "ad_removal" not in columns:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN ad_removal TEXT NOT NULL DEFAULT 'off'")
+            if "quality" not in columns:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN quality TEXT NOT NULL DEFAULT '1080'")
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(sources)")}
         if "check_frequency" not in columns:
             conn.execute("ALTER TABLE sources ADD COLUMN check_frequency TEXT NOT NULL DEFAULT 'off'")

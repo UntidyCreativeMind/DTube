@@ -184,13 +184,75 @@ def test_ad_levels_map_to_sponsorblock_categories(tmp_path, monkeypatch):
     for level, expected in (("conservative", "selfpromo,interaction"),
                             ("aggressive", "selfpromo,interaction,sponsor")):
         with pytest.raises(Stop):
-            ytdlp.download("a", tmp_path, 1080, level, None, None)
+            ytdlp.download("a", tmp_path, "1080", level, None, None)
         args = captured["args"]
         assert args[args.index("--sponsorblock-remove") + 1] == expected
         assert args.index("--sponsorblock-remove") < args.index("--")
     with pytest.raises(Stop):
-        ytdlp.download("a", tmp_path, 1080, "off", None, None)
+        ytdlp.download("a", tmp_path, "1080", "off", None, None)
     assert "--sponsorblock-remove" not in captured["args"]
+
+
+def test_quality_maps_to_format_and_container(tmp_path, monkeypatch):
+    captured = {}
+
+    class Stop(Exception):
+        pass
+
+    def fake_popen(args, **kwargs):
+        captured["args"] = args
+        raise Stop
+
+    monkeypatch.setattr(ytdlp.subprocess, "Popen", fake_popen)
+    for quality, selector_part, container in (("max", "bv*+ba", "mkv"), ("720", "[height<=720]", "mp4"),
+                                              ("360", "[height<=360]", "mp4")):
+        with pytest.raises(Stop):
+            ytdlp.download("a", tmp_path, quality, "off", None, None)
+        args = captured["args"]
+        assert selector_part in args[args.index("-f") + 1]
+        assert args[args.index("--merge-output-format") + 1] == container
+    assert "avc1" in ytdlp.format_selector("1080")
+    assert "avc1" not in ytdlp.format_selector("max")
+
+
+def test_quality_is_set_per_download_with_a_default(admin, monkeypatch):
+    probe_as(monkeypatch, VIDEO)
+    admin.post("/api/sources", json={"url": "https://youtu.be/v", "quality": "480"})
+    assert job_rows()[0]["quality"] == "480"
+    with db.connect() as conn:
+        conn.execute("DELETE FROM jobs")
+    admin.put("/api/settings", json={"default_quality": "max"})
+    admin.post("/api/sources", json={"url": "https://youtu.be/v"})
+    assert job_rows()[0]["quality"] == "max"
+    assert admin.post("/api/sources", json={"url": "https://youtu.be/v", "quality": "4k"}).status_code == 400
+
+
+def test_playlist_quality_applies_to_later_checks(admin, monkeypatch):
+    probe_as(monkeypatch, PLAYLIST)
+    url = "https://www.youtube.com/playlist?list=PL1"
+    admin.post("/api/sources", json={"url": url, "mode": "tv", "quality": "720"})
+    assert all(r["quality"] == "720" for r in job_rows())
+    source_id = admin.get("/api/sources").json()[0]["id"]
+    admin.patch(f"/api/sources/{source_id}", json={"quality": "360"})
+    assert admin.patch(f"/api/sources/{source_id}", json={"quality": "8k"}).status_code == 400
+    with db.connect() as conn:
+        conn.execute("UPDATE jobs SET status = 'cancelled'")
+    admin.post(f"/api/sources/{source_id}/check")
+    assert [r["quality"] for r in job_rows()][-2:] == ["360", "360"]
+
+
+def test_redownload_keeps_or_changes_the_quality(admin):
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO placements (id, video_id, mode, show_id, path, created_at, quality) "
+            "VALUES (1, 'a', 'movie', 0, 'x', 0, '720')"
+        )
+    admin.post("/api/history/1/redownload")
+    assert job_rows()[0]["quality"] == "720"
+    with db.connect() as conn:
+        conn.execute("UPDATE jobs SET status = 'done'")
+    admin.post("/api/history/1/redownload", json={"quality": "max"})
+    assert job_rows()[1]["quality"] == "max"
 
 
 def test_old_database_is_upgraded():
@@ -263,7 +325,8 @@ def test_settings_reject_bad_values(admin):
     assert admin.put("/api/settings", json={"unknown": 1}).status_code == 400
     assert admin.put("/api/settings", json={"check_hours": 6}).status_code == 400
     assert admin.put("/api/settings", json={"min_free_gb": -1}).status_code == 400
-    assert admin.put("/api/settings", json={"quality": "best"}).status_code == 400
+    assert admin.put("/api/settings", json={"default_quality": "best"}).status_code == 400
+    assert admin.put("/api/settings", json={"default_quality": ""}).status_code == 400
 
 
 def test_mkdir_rejects_paths(admin):
