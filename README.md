@@ -40,7 +40,13 @@ Then start it:
 docker compose up -d --build
 ```
 
-Open `http://<host>:3434` and create your admin login.
+Open `http://<host>:3434` and create your admin login straight away. Until you do, anyone who can reach the port can create it, so do this before adding a reverse proxy.
+
+Then go to **Settings**:
+
+1. Choose your temporary, TV and movie folders. These must be inside the folder you mounted.
+2. Set the file owner to a user that can write to those folders and that Plex can read from.
+3. Connect Plex and pick your two libraries.
 
 ## Plex setup
 

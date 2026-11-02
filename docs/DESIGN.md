@@ -8,7 +8,7 @@
 
 ## Stack
 
-- **Backend:** Python and FastAPI, using yt-dlp as a library.
+- **Backend:** Python and FastAPI. yt-dlp runs as a subprocess, so a UI update applies without a restart and a yt-dlp crash can't stop the app.
 - **Database:** SQLite in `/config`.
 - **Frontend:** React, TypeScript, Vite and Tailwind, served by the backend.
 - **Image:** includes ffmpeg and Deno, because yt-dlp needs a JavaScript runtime for full YouTube support.
@@ -16,7 +16,7 @@
 ## Workflow
 
 1. A URL is submitted. A playlist URL requires a mode (TV or Movie). A single video URL is always Movie mode.
-2. Each video not already in the history is queued.
+2. Each video not already in the history is queued. One video downloads at a time, which keeps episode numbers in playlist order.
 3. The video downloads to the temp folder.
 4. It is moved into the library folder with its NFO and artwork.
 5. The history is updated and Plex is asked to refresh.
@@ -53,6 +53,8 @@
 ├── Video Title.mp4
 ├── Video Title.jpg
 └── movie.nfo
+
+A title that would collide with another video's folder gets the video ID added.
 ```
 
 ## Download history

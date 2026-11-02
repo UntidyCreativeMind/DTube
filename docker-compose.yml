@@ -1,0 +1,10 @@
+services:
+  dtube:
+    build: .
+    container_name: dtube
+    restart: unless-stopped
+    ports:
+      - "3434:3434"
+    volumes:
+      - ./config:/config
+      - /your/media/folder:/media # the only line you edit
